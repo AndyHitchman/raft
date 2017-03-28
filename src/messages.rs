@@ -47,13 +47,13 @@ pub struct AppendEntriesResultPayload {
 #[derive(Eq, PartialEq, Debug)]
 pub struct RequestVotePayload {
     /// candidate's term
-    term: u64,
+    pub term: u64,
     /// candidate requesting vote
-    candidate_id: u16,
+    pub candidate_id: u16,
     /// index of candidate's last log entry
-    last_log_index: u64,
+    pub last_log_index: u64,
     /// term of candidate's last log entry
-    last_log_term: u64,
+    pub last_log_term: u64,
 }
 
 #[derive(Eq, PartialEq, Debug)]

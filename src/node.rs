@@ -1,6 +1,6 @@
 //! The distributed node
 
-use std::sync::mpsc::{channel,Sender,Receiver};
+use std::sync::mpsc::{channel,Sender,Receiver,RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 use messages::*;
@@ -46,17 +46,50 @@ impl Node {
         let (tx, stubRx) = channel();
         let (stubTx, rx) = channel();
 
-        ;
-        self.handle_received(Dispatch { tx: tx, rx: rx });
+        self.handle_received(tx, rx, self.config.electionTimeout);
 
         Endpoint { tx: stubTx, rx: stubRx }
     }
 
-    fn handle_received(&self, dispatch: Dispatch) {
-        // let rx = self.dispatcher.rx;
-        // thread::spawn(|| {
-        //     let recvd = rx.recv_timeout(self.config.electionTimeout);
-        // });
+    fn handle_received(&self, tx: Sender<OutwardMessage>, rx: Receiver<InwardMessage>, waitForMessage: Duration) {
+        thread::spawn(move || {
+            loop {
+                match rx.recv_timeout(waitForMessage) {
+                    Ok(InwardMessage::AppendEntries(ae)) => {
+                        // svr.append_entries(ae);
+                    },
+                    Ok(InwardMessage::AppendEntriesResult(aer)) => {
+                    },
+                    Ok(InwardMessage::RequestVote(rv)) => {
+                    },
+                    Ok(InwardMessage::RequestVoteResult(rvr)) => {
+                    },
+                    Ok(InwardMessage::Stop) => {
+                        println!("Stopping");
+                        tx.send(OutwardMessage::Stopped);
+                        return;
+                    },
+                    Ok(InwardMessage::ReportStatus) => {
+                        println!("Reporting status");
+                        // tx.send(OutwardMessage::Status(StatusPayload {
+                        //     term: svr.state.current_term,
+                        //     mode: svr.mode.clone(),
+                        //     commit_index: svr.commit_index}));
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        tx.send(OutwardMessage::RequestVote(
+                            RequestVotePayload {
+                                term: 0,
+                                candidate_id: 0,
+                                last_log_index: 0,
+                                last_log_term: 0 
+                            }
+                        ));
+                    },
+                    Err(RecvTimeoutError::Disconnected) => {}
+                }
+            }
+        });
 
         ()
     }
