@@ -1,5 +1,5 @@
 /// Role of the node
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Role {
     Follower,
     Candidate,

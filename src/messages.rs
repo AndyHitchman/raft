@@ -1,6 +1,7 @@
+#![allow(dead_code)]
 use role::*;
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub enum InwardMessage {
     AppendEntries(AppendEntriesPayload),
     AppendEntriesResult(AppendEntriesResultPayload),
@@ -10,17 +11,16 @@ pub enum InwardMessage {
     ReportStatus,
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub enum OutwardMessage {
     AppendEntries(AppendEntriesPayload),
     AppendEntriesResult(AppendEntriesResultPayload),
     RequestVote(RequestVotePayload),
     RequestVoteResult(RequestVoteResultPayload),
     Stopped,
-    Status(StatusPayload),
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub struct AppendEntriesPayload {
     /// leader's term
     term: u64,
@@ -36,7 +36,7 @@ pub struct AppendEntriesPayload {
     leaders_commit: u64,
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub struct AppendEntriesResultPayload {
     /// currentTerm, for leader to update itself
     term: u64,
@@ -44,7 +44,7 @@ pub struct AppendEntriesResultPayload {
     success: bool,
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub struct RequestVotePayload {
     /// candidate's term
     pub term: u64,
@@ -56,7 +56,7 @@ pub struct RequestVotePayload {
     pub last_log_term: u64,
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub struct RequestVoteResultPayload {
     /// currentTerm, for candidate to update itself
     term: u64,
@@ -64,7 +64,7 @@ pub struct RequestVoteResultPayload {
     vote_granted: bool,
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub struct StatusPayload {
     /// leader's term
     pub term: u64,

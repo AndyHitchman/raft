@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub struct LogEntry {
     pub term:   u64,
     pub entry:  Vec<u8>,
