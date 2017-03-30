@@ -1,3 +1,5 @@
+extern crate rand;
+
 mod raft;
 mod node;
 mod messages;

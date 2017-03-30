@@ -1,7 +1,12 @@
 #![allow(dead_code)]
 //! The distributed node
 
+use std::time::Duration;
 use std::sync::mpsc::{channel,Sender,Receiver,RecvTimeoutError};
+use rand;
+use rand::ThreadRng;
+use rand::distributions::{IndependentSample,Range};
+
 use messages::*;
 use role::*;
 use config::*;
@@ -26,6 +31,8 @@ pub struct Node {
     dispatch: Dispatch,
 }
 
+const lower_election_timeout_delay: u64 = 150;
+const upper_election_timeout_delay: u64 = 300;
 
 impl Node {
 
@@ -68,6 +75,12 @@ impl Node {
         }
     }
 
+    fn new_election_timeout() -> Duration {
+        let between = Range::new(lower_election_timeout_delay, upper_election_timeout_delay + 1);
+        let mut rng = rand::thread_rng();
+        Duration::from_millis(between.ind_sample(&mut rng))
+    }
+
     fn become_candidate_leader(&mut self) {
         self.change_role(Role::Candidate);
 
@@ -100,6 +113,25 @@ mod tests {
     use std::time::Duration;
     use std::sync::mpsc::channel;
     use super::*;
+
+    #[test]
+    fn new_election_timeout_is_between_150_and_300ms() {
+        let mut hit_lower = false;
+        let mut hit_upper = false;
+
+        for tries in 1..10000000 {
+            let timeout = Node::new_election_timeout();
+            assert!(timeout >= Duration::from_millis(lower_election_timeout_delay));
+            assert!(timeout <= Duration::from_millis(upper_election_timeout_delay));
+
+            if timeout == Duration::from_millis(lower_election_timeout_delay) { hit_lower = true; }
+            if timeout == Duration::from_millis(upper_election_timeout_delay) { hit_upper = true; }
+            if tries > 10000 && hit_upper && hit_lower { break; }
+        }
+
+        assert!(hit_lower);
+        assert!(hit_upper);
+    }
 
     fn fast_config() -> Config {
         Config {
