@@ -65,7 +65,7 @@ pub struct RequestVoteResultPayload {
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
-pub struct StatusPayload {
+pub struct Status {
     /// leader's term
     pub term: u64,
     /// server role

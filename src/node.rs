@@ -2,28 +2,15 @@
 //! The distributed node
 
 use std::sync::mpsc::{channel,Sender,Receiver,RecvTimeoutError};
-use std::sync::{Arc,Mutex};
-use std::thread;
-use std::time::Duration;
 use messages::*;
 use role::*;
+use config::*;
+use raft::*;
 
-struct Raft {}
-
-struct Config {
-    election_timeout: Duration,
-}
-
-struct Dispatch {
+pub struct Dispatch {
     tx: Sender<OutwardMessage>,
     rx: Receiver<InwardMessage>,
-    status: Sender<StatusPayload>,
-}
-
-struct Endpoint {
-    tx: Sender<InwardMessage>,
-    rx: Receiver<OutwardMessage>,
-    status: Receiver<StatusPayload>,
+    status: Sender<Status>,
 }
 
 pub struct Follower {
@@ -32,38 +19,26 @@ pub struct Follower {
     match_index: u64,
 }
 
-
-struct Node {
-    role: Role,
-    config: Config,
+pub struct Node {
+    pub role: Role,
+    pub config: Config,
     followers: Vec<Follower>,
     dispatch: Dispatch,
 }
 
 
-impl Raft {
+impl Node {
 
-    fn start_node(config: Config) -> Endpoint {
-        let (tx, client_rx) = channel();
-        let (client_tx, rx) = channel();
-        let (status_tx, status_rx) = channel();
-
-        let node = Node {
-            role: Role::Follower,
+    pub fn new(config: Config, tx: Sender<OutwardMessage>, rx: Receiver<InwardMessage>, status_tx: Sender<Status>) -> Node {
+        Node {
+            role: Role::Disqualified,
             config: config,
             followers: vec![],
             dispatch: Dispatch { tx: tx, rx: rx, status: status_tx }
-        };
-
-        thread::spawn(move || node.run());
-
-        Endpoint { tx: client_tx, rx: client_rx, status: status_rx }
+        }
     }
-}
 
-impl Node {
-
-    fn run(mut self) {
+    pub fn run(mut self) {
         self.change_role(Role::Follower);
 
         loop {
@@ -112,7 +87,7 @@ impl Node {
     }
 
     fn report_status(&self) {
-        self.dispatch.status.send(StatusPayload {
+        self.dispatch.status.send(Status {
             term: 0, //svr.state.current_term,
             role: self.role.clone(),
             commit_index: 0 //svr.commit_index
@@ -130,6 +105,16 @@ mod tests {
         Config {
             election_timeout: Duration::new(0, 100),
         }
+    }
+
+    #[test]
+    fn new_node_is_disqualified_before_run() {
+        let (tx, _) = channel::<OutwardMessage>();
+        let (_, rx) = channel::<InwardMessage>();
+        let (status, _) = channel::<Status>();
+
+        let node = Node::new(fast_config(), tx, rx, status);
+        assert_eq!(Role::Disqualified, node.role)
     }
 
     #[test]
@@ -167,8 +152,9 @@ mod tests {
             #[test]
             fn candidate_becomes_leader_on_receiving_majority_of_votes() {
                 let endpoint = Raft::start_node(tests::fast_config());
-                //..stuff
-                // assert_eq!(Role::Leader, node.role)
+                thread::sleep(Duration::new(0, 200));
+                let actual_status = endpoint.status.try_iter().last().unwrap();
+                assert_eq!(Role::Leader, actual_status.role)
             }
         }
     }
