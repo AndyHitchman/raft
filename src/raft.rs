@@ -33,17 +33,3 @@ impl Raft {
         Endpoint { tx: client_tx, rx: client_rx, status: status_rx }
     }
 }
-
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-    use std::sync::mpsc::channel;
-    use super::*;
-
-    fn fast_config() -> Config {
-        Config {
-            election_timeout: Duration::new(0, 100),
-        }
-    }
-}

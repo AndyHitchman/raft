@@ -31,25 +31,23 @@ pub struct Node {
     dispatch: Dispatch,
 }
 
-const lower_election_timeout_delay: u64 = 150;
-const upper_election_timeout_delay: u64 = 300;
-
 impl Node {
 
-    pub fn new(config: Config, tx: Sender<OutwardMessage>, rx: Receiver<InwardMessage>, status_tx: Sender<Status>) -> Node {
+    pub fn new(config: Config, tx: Sender<OutwardMessage>, rx: Receiver<InwardMessage>, status: Sender<Status>) -> Node {
         Node {
             role: Role::Disqualified,
             config: config,
             followers: vec![],
-            dispatch: Dispatch { tx: tx, rx: rx, status: status_tx }
+            dispatch: Dispatch { tx: tx, rx: rx, status: status }
         }
     }
 
     pub fn run(mut self) {
         self.change_role(Role::Follower);
+        let mut election_timeout = Node::new_election_timeout(&self.config.election_timeout_range_milliseconds);
 
         loop {
-            match self.dispatch.rx.recv_timeout(self.config.election_timeout) {
+            match self.dispatch.rx.recv_timeout(election_timeout) {
                 Ok(InwardMessage::AppendEntries(ae)) => {
                     // svr.append_entries(ae);
                 },
@@ -59,14 +57,15 @@ impl Node {
                 },
                 Ok(InwardMessage::RequestVoteResult(rvr)) => {
                 },
+                Ok(InwardMessage::RequestToFollow(rtf)) => {
+                },
+                Ok(InwardMessage::RequestToFollowResult(rtfr)) => {
+                },
                 Ok(InwardMessage::Stop) => {
                     println!("Stopping");
                     self.dispatch.tx.send(OutwardMessage::Stopped);
                     return;
                 },
-                Ok(InwardMessage::ReportStatus) => {
-                    println!("Reporting status");
-                }
                 Err(RecvTimeoutError::Timeout) => {
                     self.become_candidate_leader();
                 },
@@ -75,8 +74,8 @@ impl Node {
         }
     }
 
-    fn new_election_timeout() -> Duration {
-        let between = Range::new(lower_election_timeout_delay, upper_election_timeout_delay + 1);
+    fn new_election_timeout(election_timeout_range: &ElectionTimeoutRange) -> Duration {
+        let between = Range::new(election_timeout_range.minimum_milliseconds as u64, election_timeout_range.maximum_milliseconds as u64 + 1);
         let mut rng = rand::thread_rng();
         Duration::from_millis(between.ind_sample(&mut rng))
     }
@@ -112,20 +111,23 @@ impl Node {
 mod tests {
     use std::time::Duration;
     use std::sync::mpsc::channel;
+    use config::*;
     use super::*;
 
     #[test]
-    fn new_election_timeout_is_between_150_and_300ms() {
+    fn new_election_timeout_is_between_150_and_300ms_for_lan_config() {
+        let lower_limit = 150;
+        let upper_limit = 300;
         let mut hit_lower = false;
         let mut hit_upper = false;
 
         for tries in 1..10000000 {
-            let timeout = Node::new_election_timeout();
-            assert!(timeout >= Duration::from_millis(lower_election_timeout_delay));
-            assert!(timeout <= Duration::from_millis(upper_election_timeout_delay));
+            let timeout = Node::new_election_timeout(&ElectionTimeoutRange { minimum_milliseconds: lower_limit, maximum_milliseconds: upper_limit } );
+            assert!(timeout >= Duration::from_millis(lower_limit as u64));
+            assert!(timeout <= Duration::from_millis(upper_limit as u64));
 
-            if timeout == Duration::from_millis(lower_election_timeout_delay) { hit_lower = true; }
-            if timeout == Duration::from_millis(upper_election_timeout_delay) { hit_upper = true; }
+            if timeout == Duration::from_millis(lower_limit as u64) { hit_lower = true; }
+            if timeout == Duration::from_millis(upper_limit as u64) { hit_upper = true; }
             if tries > 10000 && hit_upper && hit_lower { break; }
         }
 
@@ -133,25 +135,20 @@ mod tests {
         assert!(hit_upper);
     }
 
-    fn fast_config() -> Config {
-        Config {
-            election_timeout: Duration::new(0, 100),
-        }
-    }
 
     #[test]
     fn new_node_is_disqualified_before_run() {
         let (tx, _) = channel::<OutwardMessage>();
         let (_, rx) = channel::<InwardMessage>();
-        let (status, _) = channel::<Status>();
+        let (status_tx, status_rx) = channel::<Status>();
 
-        let node = Node::new(fast_config(), tx, rx, status);
+        let node = Node::new(Config::testing(), tx, rx, status_tx);
         assert_eq!(Role::Disqualified, node.role)
     }
 
     #[test]
     fn node_starts_as_follower() {
-        let endpoint = Raft::start_node(fast_config());
+        let endpoint = Raft::start_node(Config::testing());
         let actual_status = endpoint.status.recv().unwrap();
         assert_eq!(Role::Follower, actual_status.role)
     }
@@ -159,20 +156,22 @@ mod tests {
     mod election {
         mod only_node {
             use super::super::super::*;
-            use std::thread;
             use std::time::Duration;
+            use std::thread;
+            use config::*;
 
             #[test]
             fn node_becomes_a_candidate_if_it_doesnt_hear_from_a_leader() {
-                let endpoint = Raft::start_node(tests::fast_config());
-                thread::sleep(Duration::new(0, 200));
-                let actual_status = endpoint.status.try_iter().last().unwrap();
-                assert_eq!(Role::Candidate, actual_status.role)
+                let endpoint = Raft::start_node(Config::testing());
+                let initial_status = endpoint.status.recv().unwrap();
+                let running_status = endpoint.status.recv().unwrap();
+                assert_eq!(Role::Follower, initial_status.role);
+                assert_eq!(Role::Candidate, running_status.role);
             }
 
             #[test]
             fn candidate_node_will_request_votes_from_other_nodes_if_no_leader_appends_entries() {
-                let endpoint = Raft::start_node(tests::fast_config());
+                let endpoint = Raft::start_node(Config::testing());
                 thread::sleep(Duration::new(0, 200));
 
                 match endpoint.rx.recv().unwrap() {
@@ -183,7 +182,7 @@ mod tests {
 
             #[test]
             fn candidate_becomes_leader_on_receiving_majority_of_votes() {
-                let endpoint = Raft::start_node(tests::fast_config());
+                let endpoint = Raft::start_node(Config::testing());
                 thread::sleep(Duration::new(0, 200));
                 let actual_status = endpoint.status.try_iter().last().unwrap();
                 assert_eq!(Role::Leader, actual_status.role)

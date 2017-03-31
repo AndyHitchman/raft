@@ -7,8 +7,9 @@ pub enum InwardMessage {
     AppendEntriesResult(AppendEntriesResultPayload),
     RequestVote(RequestVotePayload),
     RequestVoteResult(RequestVoteResultPayload),
+    RequestToFollow(RequestToFollowPayload),
+    RequestToFollowResult(RequestToFollowResultPayload),
     Stop,
-    ReportStatus,
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -17,6 +18,8 @@ pub enum OutwardMessage {
     AppendEntriesResult(AppendEntriesResultPayload),
     RequestVote(RequestVotePayload),
     RequestVoteResult(RequestVoteResultPayload),
+    RequestToFollow(RequestToFollowPayload),
+    RequestToFollowResult(RequestToFollowResultPayload),
     Stopped,
 }
 
@@ -62,6 +65,27 @@ pub struct RequestVoteResultPayload {
     term: u64,
     /// true means candidate received vote
     vote_granted: bool,
+}
+
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub struct RequestToFollowPayload {
+    /// Supplicate node requesting membership
+    supplicant_id: u16,
+}
+
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub struct RequestToFollowResultPayload {
+    /// Supplicate node requesting membership
+    supplicant_id: u16,
+    /// Outcome of request to follow.
+    outcome: SupplicationResult,
+}
+
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub enum SupplicationResult {
+    Granted,
+    Rejected,
+    NotTheLeader
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
