@@ -8,5 +8,3 @@ mod log;
 mod config;
 
 pub use raft::*;
-use role::*;
-use config::*;

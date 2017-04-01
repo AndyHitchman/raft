@@ -2,15 +2,14 @@
 //! The distributed node
 
 use std::time::Duration;
-use std::sync::mpsc::{channel,Sender,Receiver,RecvTimeoutError};
+use std::sync::mpsc::{Sender,Receiver,RecvTimeoutError};
 use rand;
-use rand::ThreadRng;
+use rand::Rng;
 use rand::distributions::{IndependentSample,Range};
 
 use messages::*;
 use role::*;
 use config::*;
-use raft::*;
 
 pub struct Dispatch {
     tx: Sender<OutwardMessage>,
@@ -49,7 +48,9 @@ impl Node {
         loop {
             match self.dispatch.rx.recv_timeout(election_timeout) {
                 Ok(InwardMessage::AppendEntries(ae)) => {
-                    // svr.append_entries(ae);
+                    if self.role == Role::Follower {
+                        //
+                    }
                 },
                 Ok(InwardMessage::AppendEntriesResult(aer)) => {
                 },
@@ -62,35 +63,44 @@ impl Node {
                 Ok(InwardMessage::RequestToFollowResult(rtfr)) => {
                 },
                 Ok(InwardMessage::Stop) => {
-                    println!("Stopping");
-                    self.dispatch.tx.send(OutwardMessage::Stopped);
-                    return;
+                    assert!(self.dispatch.tx.send(OutwardMessage::Stopped).is_ok());
+                    break;
                 },
                 Err(RecvTimeoutError::Timeout) => {
                     self.become_candidate_leader();
+                    election_timeout = Node::new_election_timeout(&self.config.election_timeout_range_milliseconds);
                 },
                 Err(RecvTimeoutError::Disconnected) => {}
             }
         }
+
+        self.change_role(Role::Disqualified);
     }
 
     fn new_election_timeout(election_timeout_range: &ElectionTimeoutRange) -> Duration {
-        let between = Range::new(election_timeout_range.minimum_milliseconds as u64, election_timeout_range.maximum_milliseconds as u64 + 1);
-        let mut rng = rand::thread_rng();
-        Duration::from_millis(between.ind_sample(&mut rng))
+        Duration::from_millis(
+            rand::thread_rng().gen_range(
+                election_timeout_range.minimum_milliseconds as u64,
+                election_timeout_range.maximum_milliseconds as u64 + 1
+            )
+        )
     }
 
     fn become_candidate_leader(&mut self) {
         self.change_role(Role::Candidate);
 
-        self.dispatch.tx.send(OutwardMessage::RequestVote(
-            RequestVotePayload {
-                term: 0,
-                candidate_id: 0,
-                last_log_index: 0,
-                last_log_term: 0
-            }
-        ));
+        assert!(
+            self.dispatch.tx.send(
+                OutwardMessage::RequestVote(
+                    RequestVotePayload {
+                        term: 0,
+                        candidate_id: 0,
+                        last_log_index: 0,
+                        last_log_term: 0
+                    }
+                )
+            ).is_ok()
+        );
     }
 
     fn change_role(&mut self, new_role: Role) {
@@ -99,11 +109,15 @@ impl Node {
     }
 
     fn report_status(&self) {
-        self.dispatch.status.send(Status {
-            term: 0, //svr.state.current_term,
-            role: self.role.clone(),
-            commit_index: 0 //svr.commit_index
-        });
+        assert!(
+            self.dispatch.status.send(
+                Status {
+                    term: 0, //svr.state.current_term,
+                    role: self.role.clone(),
+                    commit_index: 0 //svr.commit_index
+                }
+            ).is_ok()
+        );
     }
 }
 
@@ -112,12 +126,27 @@ mod tests {
     use std::time::Duration;
     use std::sync::mpsc::channel;
     use config::*;
+    use raft::Raft;
     use super::*;
 
     #[test]
     fn new_election_timeout_is_between_150_and_300ms_for_lan_config() {
-        let lower_limit = 150;
-        let upper_limit = 300;
+        election_timeout_sample(Config::lan());
+    }
+
+    #[test]
+    fn new_election_timeout_is_between_250_and_500ms_for_close_wan_config() {
+        election_timeout_sample(Config::close_wan());
+    }
+
+    #[test]
+    fn new_election_timeout_is_between_500_and_2500ms_for_global_wan_config() {
+        election_timeout_sample(Config::global_wan());
+    }
+
+    fn election_timeout_sample(config: Config) {
+        let lower_limit = config.election_timeout_range_milliseconds.minimum_milliseconds;
+        let upper_limit = config.election_timeout_range_milliseconds.maximum_milliseconds;
         let mut hit_lower = false;
         let mut hit_upper = false;
 
@@ -143,14 +172,31 @@ mod tests {
         let (status_tx, status_rx) = channel::<Status>();
 
         let node = Node::new(Config::testing(), tx, rx, status_tx);
-        assert_eq!(Role::Disqualified, node.role)
+        assert_eq!(Role::Disqualified, node.role);
     }
 
     #[test]
     fn node_starts_as_follower() {
         let endpoint = Raft::start_node(Config::testing());
         let actual_status = endpoint.status.recv().unwrap();
-        assert_eq!(Role::Follower, actual_status.role)
+        assert_eq!(Role::Follower, actual_status.role);
+    }
+
+    #[test]
+    fn node_sends_stopped_when_told_to_stop() {
+        let endpoint = Raft::start_node(Config::testing());
+        assert!(endpoint.tx.send(InwardMessage::Stop).is_ok());
+        let received = endpoint.rx.recv().unwrap();
+        assert_eq!(OutwardMessage::Stopped, received);
+    }
+
+    #[test]
+    fn node_disqualifies_itself_when_stopped() {
+        let endpoint = Raft::start_node(Config::testing());
+        let initial_status = endpoint.status.recv().unwrap();
+        assert!(endpoint.tx.send(InwardMessage::Stop).is_ok());
+        let actual_status = endpoint.status.recv().unwrap();
+        assert_eq!(Role::Disqualified, actual_status.role);
     }
 
     mod election {
@@ -158,7 +204,7 @@ mod tests {
             use super::super::super::*;
             use std::time::Duration;
             use std::thread;
-            use config::*;
+            use raft::Raft;
 
             #[test]
             fn node_becomes_a_candidate_if_it_doesnt_hear_from_a_leader() {

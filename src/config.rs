@@ -20,12 +20,12 @@ impl Config {
         Config { election_timeout_range_milliseconds: ElectionTimeoutRange { minimum_milliseconds: 150, maximum_milliseconds: 300 } }
     }
 
-    /// Standard LAN timing
+    /// Geographical close WAN timing
     pub fn close_wan() -> Config {
         Config { election_timeout_range_milliseconds: ElectionTimeoutRange { minimum_milliseconds: 250, maximum_milliseconds: 500 } }
     }
 
-    /// Standard LAN timing
+    /// Globalally disperse WAN timing
     pub fn global_wan() -> Config {
         Config { election_timeout_range_milliseconds: ElectionTimeoutRange { minimum_milliseconds: 500, maximum_milliseconds: 2500 } }
     }
