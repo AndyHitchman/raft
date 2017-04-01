@@ -5,7 +5,6 @@ use std::time::Duration;
 use std::sync::mpsc::{Sender,Receiver,RecvTimeoutError};
 use rand;
 use rand::Rng;
-use rand::distributions::{IndependentSample,Range};
 
 use messages::*;
 use role::*;
@@ -218,7 +217,6 @@ mod tests {
             #[test]
             fn candidate_node_will_request_votes_from_other_nodes_if_no_leader_appends_entries() {
                 let endpoint = Raft::start_node(Config::testing());
-                thread::sleep(Duration::new(0, 200));
 
                 match endpoint.rx.recv().unwrap() {
                     OutwardMessage::RequestVote(_) => (),
@@ -229,7 +227,8 @@ mod tests {
             #[test]
             fn candidate_becomes_leader_on_receiving_majority_of_votes() {
                 let endpoint = Raft::start_node(Config::testing());
-                thread::sleep(Duration::new(0, 200));
+                let initial_status = endpoint.status.recv().unwrap();
+
                 let actual_status = endpoint.status.try_iter().last().unwrap();
                 assert_eq!(Role::Leader, actual_status.role)
             }
