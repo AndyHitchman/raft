@@ -85,10 +85,17 @@ impl Server {
 
         loop {
             match self.dispatch.rx.recv_timeout(election_timeout) {
-                Ok(InwardMessage::AppendEntries(ae)) => {
-                    if self.volatile_state.borrow().role == Role::Follower {
-                        //
+                Ok(InwardMessage::AppendEntries(ref ae)) if self.volatile_state.borrow().role == Role::Follower => {
+                    self.append_entries(ae);
+                },
+                Ok(InwardMessage::AppendEntries(ref ae)) if self.volatile_state.borrow().role == Role::Candidate => {
+                    if ae.term >= self.persistent_state.borrow().current_term {
+                        self.concede_election();
+                        self.append_entries(ae);
                     }
+                },
+                Ok(InwardMessage::AppendEntries(_)) => {
+                    // Should not get Append Entries when leader.
                 },
                 Ok(InwardMessage::AppendEntriesResult(aer)) => {
                 },
@@ -105,10 +112,14 @@ impl Server {
                     break;
                 },
                 Err(RecvTimeoutError::Timeout) => {
-                    self.become_candidate_leader();
-                    election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
+                    if self.volatile_state.borrow().role == Role::Follower {
+                        self.become_candidate_leader();
+                        election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
+                    }
                 },
-                Err(RecvTimeoutError::Disconnected) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    break;
+                }
             }
         }
 
@@ -126,12 +137,13 @@ impl Server {
 
     fn become_candidate_leader(&self) {
         self.change_role(Role::Candidate);
+        self.next_term();
 
         self.dispatch.tx.send(
             OutwardMessage::RequestVote(
                 RequestVotePayload {
-                    term: 0,
-                    candidate_id: 0,
+                    term: self.persistent_state.borrow().current_term,
+                    candidate_id: self.config.server_id,
                     last_log_index: 0,
                     last_log_term: 0
                 }
@@ -145,6 +157,14 @@ impl Server {
 
     }
 
+    fn next_term(&self) {
+        self.persistent_state.borrow_mut().current_term += 1;
+    }
+
+    fn concede_election(&self) {
+        self.change_role(Role::Follower);
+    }
+
     fn change_role(&self, new_role: Role) {
         self.volatile_state.borrow_mut().role = new_role;
         self.report_status();
@@ -153,11 +173,15 @@ impl Server {
     fn report_status(&self) {
         self.dispatch.status.send(
             Status {
-                term: 0, //svr.state.current_term,
+                term: self.persistent_state.borrow().current_term,
                 role: self.volatile_state.borrow().role.clone(),
                 commit_index: 0 //svr.commit_index
             }
         );
+    }
+
+    fn append_entries(&self, entries: &AppendEntriesPayload) {
+
     }
 }
 
@@ -171,17 +195,17 @@ mod tests {
 
     #[test]
     fn new_election_timeout_is_between_150_and_300ms_for_lan_config() {
-        election_timeout_sample(Config::lan());
+        election_timeout_sample(Config::lan(0));
     }
 
     #[test]
     fn new_election_timeout_is_between_250_and_500ms_for_close_wan_config() {
-        election_timeout_sample(Config::close_wan());
+        election_timeout_sample(Config::close_wan(0));
     }
 
     #[test]
     fn new_election_timeout_is_between_500_and_2500ms_for_global_wan_config() {
-        election_timeout_sample(Config::global_wan());
+        election_timeout_sample(Config::global_wan(0));
     }
 
     fn election_timeout_sample(config: Config) {
@@ -211,20 +235,20 @@ mod tests {
         let (loopback, rx) = channel::<InwardMessage>();
         let (status_tx, status_rx) = channel::<Status>();
 
-        let server = Server::new(Config::testing(), tx, rx, loopback, status_tx);
+        let server = Server::new(Config::testing(0), tx, rx, loopback, status_tx);
         assert_eq!(Role::Disqualified, server.volatile_state.borrow().role);
     }
 
     #[test]
     fn server_starts_as_follower() {
-        let endpoint = Raft::start_server(Config::testing());
+        let endpoint = Raft::start_server(Config::testing(0));
         let actual_status = endpoint.status.recv().unwrap();
         assert_eq!(Role::Follower, actual_status.role);
     }
 
     #[test]
     fn server_sends_stopped_when_told_to_stop() {
-        let endpoint = Raft::start_server(Config::testing());
+        let endpoint = Raft::start_server(Config::testing(0));
         assert!(endpoint.tx.send(InwardMessage::Stop).is_ok());
         let received = endpoint.rx.recv().unwrap();
         assert_eq!(OutwardMessage::Stopped, received);
@@ -232,7 +256,7 @@ mod tests {
 
     #[test]
     fn server_disqualifies_itself_when_stopped() {
-        let endpoint = Raft::start_server(Config::testing());
+        let endpoint = Raft::start_server(Config::testing(0));
         let initial_status = endpoint.status.recv().unwrap();
         assert!(endpoint.tx.send(InwardMessage::Stop).is_ok());
         let actual_status = endpoint.status.recv().unwrap();
@@ -248,7 +272,7 @@ mod tests {
 
             #[test]
             fn server_becomes_a_candidate_if_it_doesnt_hear_from_a_leader() {
-                let endpoint = Raft::start_server(Config::testing());
+                let endpoint = Raft::start_server(Config::testing(0));
                 let initial_status = endpoint.status.recv().unwrap();
                 let running_status = endpoint.status.recv().unwrap();
                 assert_eq!(Role::Follower, initial_status.role);
@@ -257,7 +281,7 @@ mod tests {
 
             #[test]
             fn candidate_server_will_request_votes_from_other_servers_if_no_leader_appends_entries() {
-                let endpoint = Raft::start_server(Config::testing());
+                let endpoint = Raft::start_server(Config::testing(0));
                 let initial_status = endpoint.status.recv().unwrap();
                 let running_status = endpoint.status.recv().unwrap();
 
@@ -269,7 +293,7 @@ mod tests {
 
             #[test]
             fn candidate_becomes_leader_on_receiving_majority_of_votes() {
-                let endpoint = Raft::start_server(Config::testing());
+                let endpoint = Raft::start_server(Config::testing(0));
                 let initial_status = endpoint.status.recv().unwrap();
                 let running_status = endpoint.status.recv().unwrap();
 

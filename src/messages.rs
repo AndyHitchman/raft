@@ -26,17 +26,17 @@ pub enum OutwardMessage {
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct AppendEntriesPayload {
     /// leader's term
-    term: Term,
+    pub term: Term,
     /// so follower can redirect clients
-    leader_id: ServerIdentity,
+    pub leader_id: ServerIdentity,
     /// index of log entry immediately preceding new ones
-    prev_log_index: LogIndex,
+    pub prev_log_index: LogIndex,
     /// term of prevLogIndex entry
-    prev_log_term: Term,
+    pub prev_log_term: Term,
     /// log entries to store (empty for heartbeat; may send more than one for efficiency)
-    entries: Vec<Vec<u8>>,
+    pub entries: Vec<Vec<u8>>,
     /// leader's commitIndex
-    leaders_commit: LogIndex,
+    pub leaders_commit: LogIndex,
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
