@@ -20,7 +20,6 @@ pub enum OutwardMessage {
     RequestVoteResult(RequestVoteResultPayload),
     RequestToFollow(RequestToFollowPayload),
     RequestToFollowResult(RequestToFollowResultPayload),
-    Stopped,
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]

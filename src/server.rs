@@ -53,6 +53,12 @@ pub struct Server {
     volatile_state: RefCell<VolatileState>,
 }
 
+enum ServerAction {
+    Continue,
+    NewRole(Role),
+    Stop,
+}
+
 impl Server {
 
     pub fn new(config: Config, tx: Sender<OutwardMessage>,
@@ -84,46 +90,25 @@ impl Server {
         let mut election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
 
         loop {
-            match self.dispatch.rx.recv_timeout(election_timeout) {
-                Ok(InwardMessage::AppendEntries(ref ae)) if self.volatile_state.borrow().role == Role::Follower => {
-                    self.append_entries(ae);
+            match self.event_loop(election_timeout) {
+                ServerAction::Stop => return,
+                ServerAction::NewRole(role) => {
+                    election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
+                    self.change_role(role);
                 },
-                Ok(InwardMessage::AppendEntries(ref ae)) if self.volatile_state.borrow().role == Role::Candidate => {
-                    if ae.term >= self.persistent_state.borrow().current_term {
-                        self.concede_election();
-                        self.append_entries(ae);
-                    }
-                },
-                Ok(InwardMessage::AppendEntries(_)) => {
-                    // Should not get Append Entries when leader.
-                },
-                Ok(InwardMessage::AppendEntriesResult(aer)) => {
-                },
-                Ok(InwardMessage::RequestVote(rv)) => {
-                },
-                Ok(InwardMessage::RequestVoteResult(rvr)) => {
-                },
-                Ok(InwardMessage::RequestToFollow(rtf)) => {
-                },
-                Ok(InwardMessage::RequestToFollowResult(rtfr)) => {
-                },
-                Ok(InwardMessage::Stop) => {
-                    assert!(self.dispatch.tx.send(OutwardMessage::Stopped).is_ok());
-                    break;
-                },
-                Err(RecvTimeoutError::Timeout) => {
-                    if self.volatile_state.borrow().role == Role::Follower {
-                        self.become_candidate_leader();
-                        election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
-                    }
-                },
-                Err(RecvTimeoutError::Disconnected) => {
-                    break;
-                }
+                ServerAction::Continue => (),
             }
         }
 
-        self.change_role(Role::Disqualified);
+    }
+
+    fn event_loop(&self, election_timeout: Duration) -> ServerAction {
+        match self.volatile_state.borrow().role {
+            Role::Follower => self.follower_event_loop(election_timeout),
+            Role::Candidate => self.candidate_event_loop(election_timeout),
+            Role::Leader => ServerAction::Continue,
+            Role::Disqualified => ServerAction::Stop,
+        }
     }
 
     fn new_election_timeout(election_timeout_range: &ElectionTimeoutRange) -> Duration {
@@ -135,8 +120,57 @@ impl Server {
         )
     }
 
+    fn follower_event_loop(&self, election_timeout: Duration) -> ServerAction {
+        return match self.dispatch.rx.recv_timeout(election_timeout) {
+            Ok(InwardMessage::AppendEntries(ae)) => {
+                self.append_entries(&ae);
+                ServerAction::Continue
+            },
+            Ok(InwardMessage::RequestVote(rv)) => {
+                ServerAction::Continue
+            },
+            Ok(InwardMessage::Stop) => {
+                ServerAction::NewRole(Role::Disqualified)
+            },
+            Err(RecvTimeoutError::Timeout) => {
+                self.become_candidate_leader();
+                ServerAction::NewRole(Role::Candidate)
+            },
+            Err(RecvTimeoutError::Disconnected) => {
+                ServerAction::Stop
+            },
+            _ => ServerAction::Continue
+        }
+    }
+
+    fn candidate_event_loop(&self, election_timeout: Duration) -> ServerAction {
+        return match self.dispatch.rx.recv_timeout(election_timeout) {
+            Ok(InwardMessage::AppendEntries(ae)) => {
+                if ae.term >= self.persistent_state.borrow().current_term {
+                    self.append_entries(&ae);
+                    self.concede_election()
+                } else {
+                    ServerAction::Continue
+                }
+            },
+            Ok(InwardMessage::RequestVote(rv)) => {
+                ServerAction::Continue
+            },
+            Ok(InwardMessage::RequestVoteResult(rvr)) => {
+                ServerAction::Continue
+            },
+            Ok(InwardMessage::Stop) => {
+                self.change_role(Role::Disqualified);
+                ServerAction::Stop
+            },
+            Err(RecvTimeoutError::Disconnected) => {
+                ServerAction::Stop
+            },
+            _ => ServerAction::Continue
+        }
+    }
+
     fn become_candidate_leader(&self) {
-        self.change_role(Role::Candidate);
         self.next_term();
 
         self.dispatch.tx.send(
@@ -161,8 +195,8 @@ impl Server {
         self.persistent_state.borrow_mut().current_term += 1;
     }
 
-    fn concede_election(&self) {
-        self.change_role(Role::Follower);
+    fn concede_election(&self) -> ServerAction {
+        ServerAction::NewRole(Role::Follower)
     }
 
     fn change_role(&self, new_role: Role) {
@@ -184,6 +218,9 @@ impl Server {
 
     }
 }
+
+
+
 
 #[cfg(test)]
 mod tests {
@@ -244,14 +281,6 @@ mod tests {
         let endpoint = Raft::start_server(Config::testing(0));
         let actual_status = endpoint.status.recv().unwrap();
         assert_eq!(Role::Follower, actual_status.role);
-    }
-
-    #[test]
-    fn server_sends_stopped_when_told_to_stop() {
-        let endpoint = Raft::start_server(Config::testing(0));
-        assert!(endpoint.tx.send(InwardMessage::Stop).is_ok());
-        let received = endpoint.rx.recv().unwrap();
-        assert_eq!(OutwardMessage::Stopped, received);
     }
 
     #[test]
