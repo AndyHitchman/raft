@@ -1,3 +1,8 @@
+
+pub type ServerIdentity = u16;
+pub type Term = u64;
+pub type LogIndex = u64;
+
 /// Role of the node
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Role {

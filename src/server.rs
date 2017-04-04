@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-//! The distributed node
+//! The distributed server
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -8,7 +8,7 @@ use rand;
 use rand::Rng;
 
 use messages::*;
-use role::*;
+use types::*;
 use config::*;
 
 
@@ -20,7 +20,7 @@ pub struct Dispatch {
 }
 
 struct Follower {
-    id: NodeIdentity,
+    id: ServerIdentity,
     next_index: LogIndex,
     match_index: LogIndex,
 }
@@ -31,13 +31,13 @@ enum Vote {
 }
 
 struct ElectionResults {
-    id: NodeIdentity,
+    id: ServerIdentity,
     voted: Vote,
 }
 
 struct PersistentState {
     current_term: Term,
-    voted_for: Option<NodeIdentity>,
+    voted_for: Option<ServerIdentity>,
 }
 
 struct VolatileState {
@@ -46,17 +46,21 @@ struct VolatileState {
     election_results: Option<Vec<ElectionResults>>,
 }
 
-pub struct Node {
+pub struct Server {
     pub config: Config,
     dispatch: Dispatch,
     persistent_state: RefCell<PersistentState>,
     volatile_state: RefCell<VolatileState>,
 }
 
-impl Node {
+impl Server {
 
-    pub fn new(config: Config, tx: Sender<OutwardMessage>, rx: Receiver<InwardMessage>, loopback: Sender<InwardMessage>, status: Sender<Status>) -> Node {
-        Node {
+    pub fn new(config: Config, tx: Sender<OutwardMessage>,
+               rx: Receiver<InwardMessage>,
+               loopback: Sender<InwardMessage>,
+               status: Sender<Status>) -> Server {
+
+        Server {
             config: config,
             dispatch: Dispatch { tx: tx, rx: rx, loopback: loopback, status: status },
             persistent_state: RefCell::new(
@@ -77,7 +81,7 @@ impl Node {
 
     pub fn run(self) {
         self.change_role(Role::Follower);
-        let mut election_timeout = Node::new_election_timeout(&self.config.election_timeout_range_milliseconds);
+        let mut election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
 
         loop {
             match self.dispatch.rx.recv_timeout(election_timeout) {
@@ -102,7 +106,7 @@ impl Node {
                 },
                 Err(RecvTimeoutError::Timeout) => {
                     self.become_candidate_leader();
-                    election_timeout = Node::new_election_timeout(&self.config.election_timeout_range_milliseconds);
+                    election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
                 },
                 Err(RecvTimeoutError::Disconnected) => {}
             }
@@ -187,7 +191,7 @@ mod tests {
         let mut hit_upper = false;
 
         for tries in 1..10000000 {
-            let timeout = Node::new_election_timeout(&ElectionTimeoutRange { minimum_milliseconds: lower_limit, maximum_milliseconds: upper_limit } );
+            let timeout = Server::new_election_timeout(&ElectionTimeoutRange { minimum_milliseconds: lower_limit, maximum_milliseconds: upper_limit } );
             assert!(timeout >= Duration::from_millis(lower_limit as u64));
             assert!(timeout <= Duration::from_millis(upper_limit as u64));
 
@@ -202,33 +206,33 @@ mod tests {
 
 
     #[test]
-    fn new_node_is_disqualified_before_run() {
+    fn new_server_is_disqualified_before_run() {
         let (tx, _) = channel::<OutwardMessage>();
         let (loopback, rx) = channel::<InwardMessage>();
         let (status_tx, status_rx) = channel::<Status>();
 
-        let node = Node::new(Config::testing(), tx, rx, loopback, status_tx);
-        assert_eq!(Role::Disqualified, node.volatile_state.borrow().role);
+        let server = Server::new(Config::testing(), tx, rx, loopback, status_tx);
+        assert_eq!(Role::Disqualified, server.volatile_state.borrow().role);
     }
 
     #[test]
-    fn node_starts_as_follower() {
-        let endpoint = Raft::start_node(Config::testing());
+    fn server_starts_as_follower() {
+        let endpoint = Raft::start_server(Config::testing());
         let actual_status = endpoint.status.recv().unwrap();
         assert_eq!(Role::Follower, actual_status.role);
     }
 
     #[test]
-    fn node_sends_stopped_when_told_to_stop() {
-        let endpoint = Raft::start_node(Config::testing());
+    fn server_sends_stopped_when_told_to_stop() {
+        let endpoint = Raft::start_server(Config::testing());
         assert!(endpoint.tx.send(InwardMessage::Stop).is_ok());
         let received = endpoint.rx.recv().unwrap();
         assert_eq!(OutwardMessage::Stopped, received);
     }
 
     #[test]
-    fn node_disqualifies_itself_when_stopped() {
-        let endpoint = Raft::start_node(Config::testing());
+    fn server_disqualifies_itself_when_stopped() {
+        let endpoint = Raft::start_server(Config::testing());
         let initial_status = endpoint.status.recv().unwrap();
         assert!(endpoint.tx.send(InwardMessage::Stop).is_ok());
         let actual_status = endpoint.status.recv().unwrap();
@@ -236,15 +240,15 @@ mod tests {
     }
 
     mod election {
-        mod only_node {
+        mod only_server {
             use super::super::super::*;
             use std::time::Duration;
             use std::thread;
             use raft::Raft;
 
             #[test]
-            fn node_becomes_a_candidate_if_it_doesnt_hear_from_a_leader() {
-                let endpoint = Raft::start_node(Config::testing());
+            fn server_becomes_a_candidate_if_it_doesnt_hear_from_a_leader() {
+                let endpoint = Raft::start_server(Config::testing());
                 let initial_status = endpoint.status.recv().unwrap();
                 let running_status = endpoint.status.recv().unwrap();
                 assert_eq!(Role::Follower, initial_status.role);
@@ -252,8 +256,8 @@ mod tests {
             }
 
             #[test]
-            fn candidate_node_will_request_votes_from_other_nodes_if_no_leader_appends_entries() {
-                let endpoint = Raft::start_node(Config::testing());
+            fn candidate_server_will_request_votes_from_other_servers_if_no_leader_appends_entries() {
+                let endpoint = Raft::start_server(Config::testing());
                 let initial_status = endpoint.status.recv().unwrap();
                 let running_status = endpoint.status.recv().unwrap();
 
@@ -265,7 +269,7 @@ mod tests {
 
             #[test]
             fn candidate_becomes_leader_on_receiving_majority_of_votes() {
-                let endpoint = Raft::start_node(Config::testing());
+                let endpoint = Raft::start_server(Config::testing());
                 let initial_status = endpoint.status.recv().unwrap();
                 let running_status = endpoint.status.recv().unwrap();
 

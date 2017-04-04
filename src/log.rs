@@ -1,7 +1,8 @@
 #![allow(dead_code)]
+use types::*;
 
 pub struct LogEntry {
-    pub term:   u64,
+    pub term:   Term,
     pub entry:  Vec<u8>,
 }
 
@@ -12,7 +13,7 @@ pub struct LogEntry {
 // }
 
 impl LogEntry {
-    pub fn new(term: u64, entry: &Vec<u8>) -> LogEntry {
+    pub fn new(term: Term, entry: &Vec<u8>) -> LogEntry {
         LogEntry {
             term:   term,
             entry:  entry.clone(),

@@ -1,9 +1,9 @@
 extern crate rand;
 
+mod types;
 mod raft;
-mod node;
+mod server;
 mod messages;
-mod role;
 mod log;
 mod config;
 

@@ -1,9 +1,5 @@
 #![allow(dead_code)]
-use role::*;
-
-pub type NodeIdentity = u16;
-pub type Term = u64;
-pub type LogIndex = u64;
+use types::*;
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub enum InwardMessage {
@@ -32,7 +28,7 @@ pub struct AppendEntriesPayload {
     /// leader's term
     term: Term,
     /// so follower can redirect clients
-    leader_id: NodeIdentity,
+    leader_id: ServerIdentity,
     /// index of log entry immediately preceding new ones
     prev_log_index: LogIndex,
     /// term of prevLogIndex entry
@@ -56,7 +52,7 @@ pub struct RequestVotePayload {
     /// candidate's term
     pub term: Term,
     /// candidate requesting vote
-    pub candidate_id: NodeIdentity,
+    pub candidate_id: ServerIdentity,
     /// index of candidate's last log entry
     pub last_log_index: LogIndex,
     /// term of candidate's last log entry
@@ -73,14 +69,14 @@ pub struct RequestVoteResultPayload {
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct RequestToFollowPayload {
-    /// Supplicate node requesting membership
-    supplicant_id: NodeIdentity,
+    /// Supplicate server requesting membership
+    supplicant_id: ServerIdentity,
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct RequestToFollowResultPayload {
-    /// Supplicate node requesting membership
-    supplicant_id: NodeIdentity,
+    /// Supplicate server requesting membership
+    supplicant_id: ServerIdentity,
     /// Outcome of request to follow.
     outcome: SupplicationResult,
 }
