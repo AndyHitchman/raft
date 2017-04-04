@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 use role::*;
 
+pub type NodeIdentity = u16;
+pub type Term = u64;
+pub type LogIndex = u64;
+
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub enum InwardMessage {
     AppendEntries(AppendEntriesPayload),
@@ -26,23 +30,23 @@ pub enum OutwardMessage {
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct AppendEntriesPayload {
     /// leader's term
-    term: u64,
+    term: Term,
     /// so follower can redirect clients
-    leader_id: u16,
+    leader_id: NodeIdentity,
     /// index of log entry immediately preceding new ones
-    prev_log_index: u64,
+    prev_log_index: LogIndex,
     /// term of prevLogIndex entry
-    prev_log_term: u64,
+    prev_log_term: Term,
     /// log entries to store (empty for heartbeat; may send more than one for efficiency)
     entries: Vec<Vec<u8>>,
     /// leader's commitIndex
-    leaders_commit: u64,
+    leaders_commit: LogIndex,
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct AppendEntriesResultPayload {
     /// currentTerm, for leader to update itself
-    term: u64,
+    term: Term,
     /// true if follower contained entry matching prevLogIndex and prevLogTerm
     success: bool,
 }
@@ -50,19 +54,19 @@ pub struct AppendEntriesResultPayload {
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct RequestVotePayload {
     /// candidate's term
-    pub term: u64,
+    pub term: Term,
     /// candidate requesting vote
-    pub candidate_id: u16,
+    pub candidate_id: NodeIdentity,
     /// index of candidate's last log entry
-    pub last_log_index: u64,
+    pub last_log_index: LogIndex,
     /// term of candidate's last log entry
-    pub last_log_term: u64,
+    pub last_log_term: Term,
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct RequestVoteResultPayload {
     /// currentTerm, for candidate to update itself
-    term: u64,
+    term: Term,
     /// true means candidate received vote
     vote_granted: bool,
 }
@@ -70,13 +74,13 @@ pub struct RequestVoteResultPayload {
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct RequestToFollowPayload {
     /// Supplicate node requesting membership
-    supplicant_id: u16,
+    supplicant_id: NodeIdentity,
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct RequestToFollowResultPayload {
     /// Supplicate node requesting membership
-    supplicant_id: u16,
+    supplicant_id: NodeIdentity,
     /// Outcome of request to follow.
     outcome: SupplicationResult,
 }
@@ -91,9 +95,9 @@ pub enum SupplicationResult {
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct Status {
     /// leader's term
-    pub term: u64,
+    pub term: Term,
     /// server role
     pub role: Role,
     /// commit index
-    pub commit_index: u64,
+    pub commit_index: LogIndex,
 }

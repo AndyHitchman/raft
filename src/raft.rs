@@ -26,7 +26,7 @@ impl Raft {
         let (client_tx, rx) = channel::<InwardMessage>();
         let (status_tx, status_rx) = channel::<Status>();
 
-        let node = Node::new(config, tx, rx, status_tx);
+        let node = Node::new(config, tx, rx, client_tx.clone(), status_tx);
 
         thread::spawn(move || node.run());
 
