@@ -3,7 +3,8 @@
 
 use std::cell::RefCell;
 use std::time::Duration;
-use std::sync::mpsc::{Sender,Receiver,RecvTimeoutError};
+use std::sync::{Arc,Mutex};
+use std::sync::mpsc::RecvTimeoutError;
 use rand;
 use rand::Rng;
 
@@ -12,34 +13,32 @@ use types::*;
 use config::*;
 
 
-pub struct Dispatch {
-    tx: Sender<OutwardMessage>,
-    rx: Receiver<InwardMessage>,
-    loopback: Sender<InwardMessage>,
-    status: Sender<Status>,
-}
-
+#[derive(Clone, Debug)]
 struct Follower {
     id: ServerIdentity,
     next_index: LogIndex,
     match_index: LogIndex,
 }
 
+#[derive(Clone, Debug)]
 enum Vote {
     For,
     Against
 }
 
+#[derive(Clone, Debug)]
 struct ElectionResults {
     id: ServerIdentity,
     voted: Vote,
 }
 
+#[derive(Clone, Debug)]
 struct PersistentState {
     current_term: Term,
     voted_for: Option<ServerIdentity>,
 }
 
+#[derive(Clone, Debug)]
 struct VolatileState {
     role: Role,
     followers: Option<Vec<Follower>>,
@@ -48,10 +47,13 @@ struct VolatileState {
 
 pub struct Server {
     pub config: Config,
-    dispatch: Dispatch,
     persistent_state: RefCell<PersistentState>,
     volatile_state: RefCell<VolatileState>,
 }
+
+trait FollowerServer {}
+trait CandidateServer {}
+trait LeaderServer {}
 
 enum ServerAction {
     Continue,
@@ -59,16 +61,13 @@ enum ServerAction {
     Stop,
 }
 
+/// The server event loop
 impl Server {
 
-    pub fn new(config: Config, tx: Sender<OutwardMessage>,
-               rx: Receiver<InwardMessage>,
-               loopback: Sender<InwardMessage>,
-               status: Sender<Status>) -> Server {
+    pub fn new(config: Config) -> Server {
 
         Server {
             config: config,
-            dispatch: Dispatch { tx: tx, rx: rx, loopback: loopback, status: status },
             persistent_state: RefCell::new(
                 PersistentState {
                     current_term: 0,
@@ -85,12 +84,13 @@ impl Server {
         }
     }
 
-    pub fn run(self) {
+    pub fn run(&self, dispatch: &Dispatch) {
         self.change_role(Role::Follower);
+        self.report_status(dispatch);
         let mut election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
 
         loop {
-            match self.event_loop(election_timeout) {
+            match self.handle_event(dispatch, election_timeout) {
                 ServerAction::Stop => return,
                 ServerAction::NewRole(role) => {
                     election_timeout = Server::new_election_timeout(&self.config.election_timeout_range_milliseconds);
@@ -98,14 +98,15 @@ impl Server {
                 },
                 ServerAction::Continue => (),
             }
+            self.report_status(dispatch);
         }
 
     }
 
-    fn event_loop(&self, election_timeout: Duration) -> ServerAction {
+    fn handle_event(&self, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
         match self.volatile_state.borrow().role {
-            Role::Follower => self.follower_event_loop(election_timeout),
-            Role::Candidate => self.candidate_event_loop(election_timeout),
+            Role::Follower => self.handle_event_as_follower(dispatch, election_timeout),
+            Role::Candidate => self.handle_event_as_candidate(dispatch, election_timeout),
             Role::Leader => ServerAction::Continue,
             Role::Disqualified => ServerAction::Stop,
         }
@@ -120,92 +121,16 @@ impl Server {
         )
     }
 
-    fn follower_event_loop(&self, election_timeout: Duration) -> ServerAction {
-        return match self.dispatch.rx.recv_timeout(election_timeout) {
-            Ok(InwardMessage::AppendEntries(ae)) => {
-                self.append_entries(&ae);
-                ServerAction::Continue
-            },
-            Ok(InwardMessage::RequestVote(rv)) => {
-                ServerAction::Continue
-            },
-            Ok(InwardMessage::Stop) => {
-                ServerAction::NewRole(Role::Disqualified)
-            },
-            Err(RecvTimeoutError::Timeout) => {
-                self.become_candidate_leader();
-                ServerAction::NewRole(Role::Candidate)
-            },
-            Err(RecvTimeoutError::Disconnected) => {
-                ServerAction::Stop
-            },
-            _ => ServerAction::Continue
-        }
-    }
-
-    fn candidate_event_loop(&self, election_timeout: Duration) -> ServerAction {
-        return match self.dispatch.rx.recv_timeout(election_timeout) {
-            Ok(InwardMessage::AppendEntries(ae)) => {
-                if ae.term >= self.persistent_state.borrow().current_term {
-                    self.append_entries(&ae);
-                    self.concede_election()
-                } else {
-                    ServerAction::Continue
-                }
-            },
-            Ok(InwardMessage::RequestVote(rv)) => {
-                ServerAction::Continue
-            },
-            Ok(InwardMessage::RequestVoteResult(rvr)) => {
-                ServerAction::Continue
-            },
-            Ok(InwardMessage::Stop) => {
-                self.change_role(Role::Disqualified);
-                ServerAction::Stop
-            },
-            Err(RecvTimeoutError::Disconnected) => {
-                ServerAction::Stop
-            },
-            _ => ServerAction::Continue
-        }
-    }
-
-    fn become_candidate_leader(&self) {
-        self.next_term();
-
-        self.dispatch.tx.send(
-            OutwardMessage::RequestVote(
-                RequestVotePayload {
-                    term: self.persistent_state.borrow().current_term,
-                    candidate_id: self.config.server_id,
-                    last_log_index: 0,
-                    last_log_term: 0
-                }
-            )
-        );
-
-        self.vote_for_self_as_leader();
-    }
-
-    fn vote_for_self_as_leader(&self) {
-
-    }
-
     fn next_term(&self) {
         self.persistent_state.borrow_mut().current_term += 1;
     }
 
-    fn concede_election(&self) -> ServerAction {
-        ServerAction::NewRole(Role::Follower)
-    }
-
     fn change_role(&self, new_role: Role) {
         self.volatile_state.borrow_mut().role = new_role;
-        self.report_status();
     }
 
-    fn report_status(&self) {
-        self.dispatch.status.send(
+    fn report_status(&self, dispatch: &Dispatch) {
+        dispatch.status.send(
             Status {
                 term: self.persistent_state.borrow().current_term,
                 role: self.volatile_state.borrow().role.clone(),
@@ -213,9 +138,81 @@ impl Server {
             }
         );
     }
+}
 
-    fn append_entries(&self, entries: &AppendEntriesPayload) {
+impl Server {
+    fn handle_event_as_follower(&self, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
+        return match dispatch.rx.recv_timeout(election_timeout) {
+            Ok(InwardMessage::AppendEntries(ref ae)) => self.append_entries(ae),
+            Ok(InwardMessage::RequestVote(ref rv)) => self.consider_vote(rv),
+            Ok(InwardMessage::Stop) => ServerAction::NewRole(Role::Disqualified),
+            Err(RecvTimeoutError::Timeout) => self.become_candidate_leader(dispatch),
+            Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
+            // Ignore events that have no meaning for this role.
+            _ => ServerAction::Continue
+        }
+    }
 
+    fn append_entries(&self, entries: &AppendEntriesPayload) -> ServerAction {
+        ServerAction::Continue
+    }
+
+    fn consider_vote(&self, request_vote: &RequestVotePayload) -> ServerAction {
+        //QUESTION:: should we only vote for a server in our current or next config? DoS attack?
+        let mut persistent_state = self.persistent_state.borrow_mut();
+        if persistent_state.voted_for == None {
+            persistent_state.voted_for = Some(request_vote.candidate_id);
+            //QUESTION:: do we set current_term to candidates term, or wait for append entries?
+        }
+        ServerAction::Continue
+    }
+
+    fn become_candidate_leader(&self, dispatch: &Dispatch) -> ServerAction {
+        self.next_term();
+
+        let request_vote =
+            RequestVotePayload {
+                term: self.persistent_state.borrow().current_term,
+                candidate_id: self.config.server_id,
+                last_log_index: 0,
+                last_log_term: 0
+            };
+
+        dispatch.loopback.send(InwardMessage::RequestVote(request_vote.clone()));
+        dispatch.tx.send(OutwardMessage::RequestVote(request_vote));
+
+        ServerAction::NewRole(Role::Candidate)
+    }
+}
+
+impl Server {
+    fn handle_event_as_candidate(&self, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
+        return match dispatch.rx.recv_timeout(election_timeout) {
+            Ok(InwardMessage::AppendEntries(ref ae)) => self.consider_conceding(ae),
+            Ok(InwardMessage::RequestVote(rv)) => ServerAction::Continue,
+            Ok(InwardMessage::RequestVoteResult(rvr)) => ServerAction::Continue,
+            Ok(InwardMessage::Stop) => ServerAction::NewRole(Role::Disqualified),
+            Err(RecvTimeoutError::Timeout) => self.start_new_election(dispatch),
+            Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
+            _ => ServerAction::Continue
+        }
+    }
+
+    fn consider_conceding(&self, append_entries: &AppendEntriesPayload) -> ServerAction {
+        if Server::should_concede(self.persistent_state.borrow().current_term, append_entries.term) {
+            self.append_entries(append_entries);
+            ServerAction::NewRole(Role::Follower)
+        } else {
+            ServerAction::Continue
+        }
+    }
+
+    fn should_concede(my_term: Term, other_candidates_term: Term) -> bool {
+        other_candidates_term >= my_term
+    }
+
+    fn start_new_election(&self, dispatch: &Dispatch) -> ServerAction {
+        self.become_candidate_leader(dispatch)
     }
 }
 
@@ -268,11 +265,9 @@ mod tests {
 
     #[test]
     fn new_server_is_disqualified_before_run() {
-        let (tx, _) = channel::<OutwardMessage>();
-        let (loopback, rx) = channel::<InwardMessage>();
-        let (status_tx, status_rx) = channel::<Status>();
+        let (endpoint, dispatch) = Raft::get_channels();
 
-        let server = Server::new(Config::testing(0), tx, rx, loopback, status_tx);
+        let server = Server::new(Config::testing(0));
         assert_eq!(Role::Disqualified, server.volatile_state.borrow().role);
     }
 
@@ -297,6 +292,7 @@ mod tests {
             use super::super::super::*;
             use std::time::Duration;
             use std::thread;
+            use std::sync::{Arc,Mutex};
             use raft::Raft;
 
             #[test]
@@ -306,6 +302,18 @@ mod tests {
                 let running_status = endpoint.status.recv().unwrap();
                 assert_eq!(Role::Follower, initial_status.role);
                 assert_eq!(Role::Candidate, running_status.role);
+            }
+
+            #[test]
+            fn candidate_votes_for_itself() {
+                let (endpoint, dispatch) = Raft::get_channels();
+                let server = Server::new(Config::testing(1));
+
+                thread::spawn(move || {
+                    server.run(&dispatch)
+                });
+
+                // assert_eq!(1, server.persistent_state.borrow().voted_for.unwrap());
             }
 
             #[test]

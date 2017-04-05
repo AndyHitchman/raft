@@ -1,5 +1,19 @@
 #![allow(dead_code)]
 use types::*;
+use std::sync::mpsc::{Sender,Receiver};
+
+pub struct Dispatch {
+    pub tx: Sender<OutwardMessage>,
+    pub rx: Receiver<InwardMessage>,
+    pub loopback: Sender<InwardMessage>,
+    pub status: Sender<Status>,
+}
+
+pub struct Endpoint {
+    pub tx: Sender<InwardMessage>,
+    pub rx: Receiver<OutwardMessage>,
+    pub status: Receiver<Status>,
+}
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub enum InwardMessage {

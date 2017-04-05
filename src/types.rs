@@ -1,4 +1,3 @@
-
 pub type ServerIdentity = u16;
 pub type Term = u64;
 pub type LogIndex = u64;
