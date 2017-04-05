@@ -34,7 +34,8 @@ struct PersistentState {
 
 #[derive(Clone, Debug)]
 struct VolatileState {
-    pub role: Role,
+    role: Role,
+    peers: Vec<ServerIdentity>,
     followers: Option<Vec<Follower>>,
     election_results: Option<Vec<ElectionResults>>,
 }
@@ -68,6 +69,7 @@ impl Server {
             volatile_state: RefCell::new(
                 VolatileState {
                     role: Role::Follower,
+                    peers: Vec::new(),
                     followers: None,
                     election_results: None
                 }

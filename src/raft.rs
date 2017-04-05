@@ -40,11 +40,10 @@ impl Raft {
     pub fn get_channels() -> (Endpoint, Dispatch, Receiver<InwardMessage>) {
         let (tx, client_rx) = channel::<OutwardMessage>();
         let (client_tx, rx) = channel::<InwardMessage>();
-        let (status_tx, status_rx) = channel::<Status>();
 
         (
-            Endpoint { tx: client_tx.clone(), rx: client_rx, status: status_rx },
-            Dispatch { tx: tx, status: status_tx, loopback: client_tx },
+            Endpoint { tx: client_tx.clone(), rx: client_rx },
+            Dispatch { tx: tx, loopback: client_tx },
             rx
         )
     }
