@@ -5,6 +5,6 @@ mod raft;
 mod server;
 mod messages;
 mod log;
-mod config;
+mod election_timeout;
 
 pub use raft::*;

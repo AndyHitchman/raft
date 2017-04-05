@@ -4,7 +4,6 @@ use std::sync::mpsc::{Sender,Receiver};
 
 pub struct Dispatch {
     pub tx: Sender<OutwardMessage>,
-    pub rx: Receiver<InwardMessage>,
     pub loopback: Sender<InwardMessage>,
     pub status: Sender<Status>,
 }
