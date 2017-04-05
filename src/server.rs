@@ -5,6 +5,7 @@ use std::cell::RefCell;
 
 use messages::*;
 use types::*;
+use server_traits::*;
 
 
 #[derive(Clone, Debug)]
@@ -46,17 +47,24 @@ pub struct Server {
     volatile_state: RefCell<VolatileState>,
 }
 
-#[derive(PartialEq, Debug)]
-pub enum ServerAction {
-    Continue,
-    NewRole(Role),
-    Stop,
-}
-
-/// The server event loop
 impl Server {
 
-    pub fn new(identity: ServerIdentity) -> Server {
+    fn next_term(&self) {
+        self.persistent_state.borrow_mut().current_term += 1;
+    }
+
+    pub fn report_status(&self) -> Status {
+        Status {
+            term: self.persistent_state.borrow().current_term,
+            role: self.volatile_state.borrow().role.clone(),
+            commit_index: 0 //svr.commit_index
+        }
+    }
+}
+
+impl RaftServer for Server {
+
+    fn new(identity: ServerIdentity) -> Server {
 
         Server {
             identity: identity,
@@ -77,34 +85,23 @@ impl Server {
         }
     }
 
-    fn next_term(&self) {
-        self.persistent_state.borrow_mut().current_term += 1;
-    }
-
-    pub fn current_role(&self) -> Role {
+    fn current_role(&self) -> Role {
         self.volatile_state.borrow().role.clone()
     }
 
-    pub fn change_role(&self, new_role: Role) {
+    fn change_role(&self, new_role: Role) {
         self.volatile_state.borrow_mut().role = new_role;
     }
 
-    pub fn report_status(&self) -> Status {
-        Status {
-            term: self.persistent_state.borrow().current_term,
-            role: self.volatile_state.borrow().role.clone(),
-            commit_index: 0 //svr.commit_index
-        }
-    }
 }
 
-impl Server {
+impl FollowingServer for Server {
 
-    pub fn append_entries(&self, entries: &AppendEntriesPayload) -> ServerAction {
+    fn append_entries(&self, entries: &AppendEntriesPayload) -> ServerAction {
         ServerAction::Continue
     }
 
-    pub fn consider_vote(&self, request_vote: &RequestVotePayload) -> ServerAction {
+    fn consider_vote(&self, request_vote: &RequestVotePayload) -> ServerAction {
         //QUESTION:: should we only vote for a server in our current or next config? DoS attack?
         let mut persistent_state = self.persistent_state.borrow_mut();
         if persistent_state.voted_for == None {
@@ -114,7 +111,7 @@ impl Server {
         ServerAction::Continue
     }
 
-    pub fn become_candidate_leader(&self, dispatch: &Dispatch) -> ServerAction {
+    fn become_candidate_leader(&self, dispatch: &Dispatch) -> ServerAction {
         self.next_term();
 
         let request_vote =
@@ -125,16 +122,16 @@ impl Server {
                 last_log_term: 0
             };
 
-        dispatch.loopback.send(InwardMessage::RequestVote(request_vote.clone()));
-        dispatch.tx.send(OutwardMessage::RequestVote(request_vote));
+        dispatch.loopback.send(InwardMessage::RequestVote(request_vote.clone())).unwrap();
+        dispatch.tx.send(OutwardMessage::RequestVote(request_vote)).unwrap();
 
         ServerAction::NewRole(Role::Candidate)
     }
 }
 
-impl Server {
+impl CandidateServer for Server {
 
-    pub fn consider_conceding(&self, append_entries: &AppendEntriesPayload) -> ServerAction {
+    fn consider_conceding(&self, append_entries: &AppendEntriesPayload) -> ServerAction {
         if Server::should_concede(self.persistent_state.borrow().current_term, append_entries.term) {
             self.append_entries(append_entries);
             ServerAction::NewRole(Role::Follower)
@@ -143,16 +140,17 @@ impl Server {
         }
     }
 
-    fn should_concede(my_term: Term, other_candidates_term: Term) -> bool {
-        other_candidates_term >= my_term
-    }
-
-    pub fn start_new_election(&self, dispatch: &Dispatch) -> ServerAction {
+    fn start_new_election(&self, dispatch: &Dispatch) -> ServerAction {
         self.become_candidate_leader(dispatch)
     }
 }
 
+impl Server {
 
+    fn should_concede(my_term: Term, other_candidates_term: Term) -> bool {
+        other_candidates_term >= my_term
+    }
+}
 
 
 #[cfg(test)]
@@ -191,7 +189,7 @@ mod tests {
 
             #[test]
             fn follower_becomes_a_candidate_if_it_doesnt_hear_from_a_leader() {
-                let (endpoint, dispatch, rx) = Raft::get_channels();
+                let (endpoint, dispatch, loopback) = Raft::get_channels();
                 let server = Server::new(ServerIdentity::new());
 
                 let result = server.become_candidate_leader(&dispatch);
@@ -199,8 +197,22 @@ mod tests {
             }
 
             #[test]
+            fn candidate_server_will_request_votes_from_other_servers() {
+                let (endpoint, dispatch, loopback) = Raft::get_channels();
+                let this_server_id = ServerIdentity::new();
+                let server = Server::new(this_server_id.clone());
+
+                server.become_candidate_leader(&dispatch);
+
+                match endpoint.rx.recv().unwrap() {
+                    OutwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
+                    _ => panic!()
+                };
+            }
+
+            #[test]
             fn an_election_starts_a_new_term() {
-                let (endpoint, dispatch, rx) = Raft::get_channels();
+                let (endpoint, dispatch, loopback) = Raft::get_channels();
                 let server = Server::new(ServerIdentity::new());
 
                 server.become_candidate_leader(&dispatch);
@@ -210,7 +222,7 @@ mod tests {
 
             #[test]
             fn follower_will_vote_for_the_first_candidate_that_requests_a_vote() {
-                let (endpoint, dispatch, _) = Raft::get_channels();
+                let (endpoint, dispatch, loopback) = Raft::get_channels();
                 let server = Server::new(ServerIdentity::new());
                 let other_server_id = ServerIdentity::new();
 
@@ -226,7 +238,7 @@ mod tests {
 
             #[test]
             fn follower_will_only_vote_once() {
-                let (endpoint, dispatch, _) = Raft::get_channels();
+                let (endpoint, dispatch, loopback) = Raft::get_channels();
                 let this_server_id = ServerIdentity::new();
                 let server = Server::new(this_server_id.clone());
                 server.persistent_state.borrow_mut().voted_for = Some(this_server_id.clone());
@@ -247,7 +259,7 @@ mod tests {
                 let this_server_id = ServerIdentity::new();
                 let server = Server::new(this_server_id.clone());
 
-                server.start_new_election(&dispatch);
+                server.become_candidate_leader(&dispatch);
 
                 match loopback.recv().unwrap() {
                     InwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
@@ -261,7 +273,7 @@ mod tests {
                 let this_server_id = ServerIdentity::new();
                 let server = Server::new(this_server_id.clone());
 
-                server.become_candidate_leader(&dispatch);
+                server.start_new_election(&dispatch);
 
                 match loopback.recv().unwrap() {
                     InwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
@@ -307,23 +319,10 @@ mod tests {
                 assert_eq!(ServerAction::NewRole(Role::Follower), result);
             }
 
-            #[test]
-            fn candidate_server_will_request_votes_from_other_servers_if_no_leader_appends_entries() {
-                let (endpoint, dispatch, _) = Raft::get_channels();
-                let this_server_id = ServerIdentity::new();
-                let server = Server::new(this_server_id.clone());
-
-                server.become_candidate_leader(&dispatch);
-
-                match endpoint.rx.recv().unwrap() {
-                    OutwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
-                    _ => panic!()
-                };
-            }
 
             #[test]
             fn candidate_becomes_leader_on_receiving_majority_of_votes() {
-                let (endpoint, dispatch, rx) = Raft::get_channels();
+                let (endpoint, dispatch, loopback) = Raft::get_channels();
                 let this_server_id = ServerIdentity::new();
                 let server = Server::new(this_server_id.clone());
 

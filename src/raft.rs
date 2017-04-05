@@ -10,7 +10,10 @@ use rand::Rng;
 use types::{ServerIdentity,Role};
 use election_timeout::ElectionTimeoutRange;
 use messages::*;
-use server::{Server,ServerAction};
+use server_traits::*;
+use server::Server;
+
+
 
 pub struct Raft {}
 
