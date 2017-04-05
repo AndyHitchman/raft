@@ -60,7 +60,7 @@ impl Raft {
         )
     }
 
-    pub fn run(server: &Server, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout_range: ElectionTimeoutRange) {
+    pub fn run(server: &RaftServer, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout_range: ElectionTimeoutRange) {
         let mut election_timeout = Raft::new_election_timeout(&election_timeout_range);
 
         loop {
@@ -75,7 +75,7 @@ impl Raft {
         }
     }
 
-    fn handle_event(server: &Server, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
+    fn handle_event(server: &RaftServer, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
         match server.current_role() {
             Role::Follower => Raft::handle_event_as_follower(server, dispatch, rx, election_timeout),
             Role::Candidate => Raft::handle_event_as_candidate(server, dispatch, rx, election_timeout),
@@ -83,7 +83,7 @@ impl Raft {
         }
     }
 
-    fn handle_event_as_follower(server: &Server, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
+    fn handle_event_as_follower(server: &RaftServer, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
         return match rx.recv_timeout(election_timeout) {
             Ok(InwardMessage::AppendEntries(ref ae)) => server.append_entries(ae),
             Ok(InwardMessage::RequestVote(ref rv)) => server.consider_vote(rv),
@@ -95,7 +95,7 @@ impl Raft {
         }
     }
 
-    fn handle_event_as_candidate(server: &Server, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
+    fn handle_event_as_candidate(server: &RaftServer, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
         return match rx.recv_timeout(election_timeout) {
             Ok(InwardMessage::AppendEntries(ref ae)) => server.consider_conceding(ae),
             Ok(InwardMessage::RequestVote(rv)) => ServerAction::Continue,

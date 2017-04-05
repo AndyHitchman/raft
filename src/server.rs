@@ -49,22 +49,7 @@ pub struct Server {
 
 impl Server {
 
-    fn next_term(&self) {
-        self.persistent_state.borrow_mut().current_term += 1;
-    }
-
-    pub fn report_status(&self) -> Status {
-        Status {
-            term: self.persistent_state.borrow().current_term,
-            role: self.volatile_state.borrow().role.clone(),
-            commit_index: 0 //svr.commit_index
-        }
-    }
-}
-
-impl RaftServer for Server {
-
-    fn new(identity: ServerIdentity) -> Server {
+    pub fn new(identity: ServerIdentity) -> Server {
 
         Server {
             identity: identity,
@@ -85,6 +70,25 @@ impl RaftServer for Server {
         }
     }
 
+    fn next_term(&self) {
+        self.persistent_state.borrow_mut().current_term += 1;
+    }
+
+    pub fn report_status(&self) -> Status {
+        Status {
+            term: self.persistent_state.borrow().current_term,
+            role: self.volatile_state.borrow().role.clone(),
+            commit_index: 0 //svr.commit_index
+        }
+    }
+
+    fn should_concede(my_term: Term, other_candidates_term: Term) -> bool {
+        other_candidates_term >= my_term
+    }
+}
+
+impl RaftServer for Server {
+
     fn current_role(&self) -> Role {
         self.volatile_state.borrow().role.clone()
     }
@@ -92,10 +96,6 @@ impl RaftServer for Server {
     fn change_role(&self, new_role: Role) {
         self.volatile_state.borrow_mut().role = new_role;
     }
-
-}
-
-impl FollowingServer for Server {
 
     fn append_entries(&self, entries: &AppendEntriesPayload) -> ServerAction {
         ServerAction::Continue
@@ -127,9 +127,6 @@ impl FollowingServer for Server {
 
         ServerAction::NewRole(Role::Candidate)
     }
-}
-
-impl CandidateServer for Server {
 
     fn consider_conceding(&self, append_entries: &AppendEntriesPayload) -> ServerAction {
         if Server::should_concede(self.persistent_state.borrow().current_term, append_entries.term) {
@@ -142,13 +139,6 @@ impl CandidateServer for Server {
 
     fn start_new_election(&self, dispatch: &Dispatch) -> ServerAction {
         self.become_candidate_leader(dispatch)
-    }
-}
-
-impl Server {
-
-    fn should_concede(my_term: Term, other_candidates_term: Term) -> bool {
-        other_candidates_term >= my_term
     }
 }
 
