@@ -1,4 +1,18 @@
-pub type ServerIdentity = u16;
+use uuid::Uuid;
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct ServerIdentity {
+    id: Uuid
+}
+
+impl ServerIdentity {
+    pub fn new() -> ServerIdentity {
+        ServerIdentity {
+            id: Uuid::new_v4()
+        }
+    }
+}
+
 pub type Term = u64;
 pub type LogIndex = u64;
 

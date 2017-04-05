@@ -106,7 +106,7 @@ impl Server {
         //QUESTION:: should we only vote for a server in our current or next config? DoS attack?
         let mut persistent_state = self.persistent_state.borrow_mut();
         if persistent_state.voted_for == None {
-            persistent_state.voted_for = Some(request_vote.candidate_id);
+            persistent_state.voted_for = Some(request_vote.candidate_id.clone());
             //QUESTION:: do we set current_term to candidates term, or wait for append entries?
         }
         ServerAction::Continue
@@ -118,7 +118,7 @@ impl Server {
         let request_vote =
             RequestVotePayload {
                 term: self.persistent_state.borrow().current_term,
-                candidate_id: self.identity,
+                candidate_id: self.identity.clone(),
                 last_log_index: 0,
                 last_log_term: 0
             };
@@ -165,14 +165,14 @@ mod tests {
     fn new_server_is_a_follower() {
         let (endpoint, dispatch, _) = Raft::get_channels();
 
-        let server = Server::new(1);
+        let server = Server::new(ServerIdentity::new());
         assert_eq!(Role::Follower, server.current_role());
     }
 
     #[test]
     fn change_role_to_candidate() {
         let (endpoint, dispatch, _) = Raft::get_channels();
-        let server = Server::new(1);
+        let server = Server::new(ServerIdentity::new());
         server.change_role(Role::Candidate);
 
         assert_eq!(Role::Candidate, server.current_role());
@@ -190,7 +190,7 @@ mod tests {
             #[test]
             fn follower_becomes_a_candidate_if_it_doesnt_hear_from_a_leader() {
                 let (endpoint, dispatch, rx) = Raft::get_channels();
-                let server = Server::new(1);
+                let server = Server::new(ServerIdentity::new());
 
                 let result = server.become_candidate_leader(&dispatch);
                 assert_eq!(ServerAction::NewRole(Role::Candidate), result);
@@ -199,7 +199,7 @@ mod tests {
             #[test]
             fn an_election_starts_a_new_term() {
                 let (endpoint, dispatch, rx) = Raft::get_channels();
-                let server = Server::new(1);
+                let server = Server::new(ServerIdentity::new());
 
                 server.become_candidate_leader(&dispatch);
 
@@ -209,43 +209,46 @@ mod tests {
             #[test]
             fn follower_will_vote_for_the_first_candidate_that_requests_a_vote() {
                 let (endpoint, dispatch, _) = Raft::get_channels();
-                let server = Server::new(1);
+                let server = Server::new(ServerIdentity::new());
+                let other_server_id = ServerIdentity::new();
 
                 server.consider_vote(&RequestVotePayload {
                     term: 2,
-                    candidate_id: 99,
+                    candidate_id: other_server_id.clone(),
                     last_log_term: 1,
                     last_log_index: 0,
                 });
 
-                assert_eq!(Some(99), server.persistent_state.borrow().voted_for);
+                assert_eq!(Some(other_server_id), server.persistent_state.borrow().voted_for);
             }
 
             #[test]
             fn follower_will_only_vote_once() {
                 let (endpoint, dispatch, _) = Raft::get_channels();
-                let server = Server::new(1);
-                server.persistent_state.borrow_mut().voted_for = Some(1);
+                let this_server_id = ServerIdentity::new();
+                let server = Server::new(this_server_id.clone());
+                server.persistent_state.borrow_mut().voted_for = Some(this_server_id.clone());
 
                 server.consider_vote(&RequestVotePayload {
                     term: 2,
-                    candidate_id: 99,
+                    candidate_id: ServerIdentity::new(),
                     last_log_term: 1,
                     last_log_index: 0,
                 });
 
-                assert_eq!(Some(1), server.persistent_state.borrow().voted_for);
+                assert_eq!(Some(this_server_id), server.persistent_state.borrow().voted_for);
             }
 
             #[test]
             fn candidate_votes_for_itself() {
                 let (endpoint, dispatch, loopback) = Raft::get_channels();
-                let server = Server::new(1);
+                let this_server_id = ServerIdentity::new();
+                let server = Server::new(this_server_id.clone());
 
                 server.start_new_election(&dispatch);
 
                 match loopback.recv().unwrap() {
-                    InwardMessage::RequestVote(rv) => assert_eq!(1, rv.candidate_id),
+                    InwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
                     _ => panic!()
                 };
             }
@@ -253,12 +256,13 @@ mod tests {
             #[test]
             fn candidate_will_start_a_new_term_if_the_election_fails() {
                 let (endpoint, dispatch, loopback) = Raft::get_channels();
-                let server = Server::new(1);
+                let this_server_id = ServerIdentity::new();
+                let server = Server::new(this_server_id.clone());
 
                 server.become_candidate_leader(&dispatch);
 
                 match loopback.recv().unwrap() {
-                    InwardMessage::RequestVote(rv) => assert_eq!(1, rv.candidate_id),
+                    InwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
                     _ => panic!()
                 };
             }
@@ -266,13 +270,13 @@ mod tests {
             #[test]
             fn candidate_will_ignore_append_entries_from_an_out_of_date_candidate() {
                 let (endpoint, dispatch, loopback) = Raft::get_channels();
-                let server = Server::new(1);
+                let server = Server::new(ServerIdentity::new());
                 server.persistent_state.borrow_mut().current_term = 3;
                 server.volatile_state.borrow_mut().role = Role::Candidate;
 
                 let result = server.consider_conceding(&AppendEntriesPayload {
                     term: 2,
-                    leader_id: 99,
+                    leader_id: ServerIdentity::new(),
                     prev_log_index: 0,
                     prev_log_term: 1,
                     entries: vec![],
@@ -285,13 +289,13 @@ mod tests {
             #[test]
             fn candidate_will_concede_election_if_it_gets_entries_to_append_for_the_same_term() {
                 let (endpoint, dispatch, loopback) = Raft::get_channels();
-                let server = Server::new(1);
+                let server = Server::new(ServerIdentity::new());
                 server.persistent_state.borrow_mut().current_term = 3;
                 server.volatile_state.borrow_mut().role = Role::Candidate;
 
                 let result = server.consider_conceding(&AppendEntriesPayload {
                     term: 3,
-                    leader_id: 99,
+                    leader_id: ServerIdentity::new(),
                     prev_log_index: 0,
                     prev_log_term: 1,
                     entries: vec![],
@@ -304,12 +308,13 @@ mod tests {
             #[test]
             fn candidate_server_will_request_votes_from_other_servers_if_no_leader_appends_entries() {
                 let (endpoint, dispatch, _) = Raft::get_channels();
-                let server = Server::new(1);
+                let this_server_id = ServerIdentity::new();
+                let server = Server::new(this_server_id.clone());
 
                 server.become_candidate_leader(&dispatch);
 
                 match endpoint.rx.recv().unwrap() {
-                    OutwardMessage::RequestVote(rv) => assert_eq!(1, rv.candidate_id),
+                    OutwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
                     _ => panic!()
                 };
             }
@@ -317,7 +322,8 @@ mod tests {
             #[test]
             fn candidate_becomes_leader_on_receiving_majority_of_votes() {
                 let (endpoint, dispatch, rx) = Raft::get_channels();
-                let server = Server::new(1);
+                let this_server_id = ServerIdentity::new();
+                let server = Server::new(this_server_id.clone());
 
 
                 // let actual_status = endpoint.status.recv().unwrap();

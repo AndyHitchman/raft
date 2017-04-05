@@ -14,7 +14,6 @@ use server::{Server,ServerAction};
 
 pub struct Raft {}
 
-
 impl Raft {
 
     /// Starts a server and returns the endoint used
@@ -156,7 +155,7 @@ mod tests {
     #[test]
     fn thread_returns_when_stopped() {
         let (endpoint, dispatch, rx) = Raft::get_channels();
-        let server = Server::new(1);
+        let server = Server::new(ServerIdentity::new());
         endpoint.tx.send(InwardMessage::Stop);
         Raft::run(&server, &dispatch, &rx, ElectionTimeoutRange::testing());
     }

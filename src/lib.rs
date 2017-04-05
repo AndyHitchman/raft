@@ -1,4 +1,5 @@
 extern crate rand;
+extern crate uuid;
 
 mod types;
 mod raft;
