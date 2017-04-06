@@ -11,6 +11,7 @@ use types::{ServerIdentity,Role};
 use election_timeout::ElectionTimeoutRange;
 use messages::*;
 use server_traits::*;
+use server_action::*;
 use server::Server;
 
 
@@ -25,11 +26,11 @@ impl Raft {
     /// The peers should contain the known membership of the cluster.
     /// The election timeout should be a random duration between 150 and 300ms.
     pub fn start_server(identity: ServerIdentity, election_timeout_range: ElectionTimeoutRange) -> Endpoint {
-        let (endpoint, dispatch, rx) = Raft::get_channels();
+        let (endpoint, dispatch) = Raft::get_channels();
 
         thread::spawn(move || {
             let server = Server::new(identity);
-            Raft::run(&server, &dispatch, &rx, election_timeout_range)
+            Raft::run(&server, &dispatch, election_timeout_range)
         });
 
         endpoint
@@ -40,14 +41,13 @@ impl Raft {
     /// Endpoint is given to the host
     /// Dispatch is given to the server
     /// The inward message receiver is retained by Raft
-    pub fn get_channels() -> (Endpoint, Dispatch, Receiver<InwardMessage>) {
-        let (tx, client_rx) = channel::<OutwardMessage>();
-        let (client_tx, rx) = channel::<InwardMessage>();
+    pub fn get_channels() -> (Endpoint, Dispatch) {
+        let (local_tx, remote_rx) = channel::<Envelope>();
+        let (remote_tx, local_rx) = channel::<Envelope>();
 
         (
-            Endpoint { tx: client_tx.clone(), rx: client_rx },
-            Dispatch { tx: tx, loopback: client_tx },
-            rx
+            Endpoint { tx: remote_tx, rx: remote_rx },
+            Dispatch { tx: local_tx, rx: local_rx },
         )
     }
 
@@ -60,52 +60,69 @@ impl Raft {
         )
     }
 
-    pub fn run(server: &RaftServer, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout_range: ElectionTimeoutRange) {
+    pub fn run(server: &RaftServer, dispatch: &Dispatch, election_timeout_range: ElectionTimeoutRange) {
         let mut election_timeout = Raft::new_election_timeout(&election_timeout_range);
 
         loop {
-            match Raft::handle_event(server, dispatch, rx, election_timeout) {
-                ServerAction::Stop => return,
-                ServerAction::NewRole(role) => {
-                    election_timeout = Raft::new_election_timeout(&election_timeout_range);
-                    server.change_role(role);
+            let action = match (dispatch.rx.recv_timeout(election_timeout), server.current_role()) {
+                (Ok(envelope), current_role) => {
+                    ServerAction::Continue//server.ensure_term_is_current(envelope.message)
                 },
-                ServerAction::Continue => (),
-            }
+                (Err(RecvTimeoutError::Timeout), current_role) => ServerAction::Stop,//server.become_candidate_leader(dispatch),
+                (Err(RecvTimeoutError::Disconnected), _) => ServerAction::Stop,
+            };
+
+            // match Raft::handle_event(server, dispatch, election_timeout) {
+            //     ServerAction::Stop => return,
+            //     ServerAction::NewRole(role) => {
+            //         election_timeout = Raft::new_election_timeout(&election_timeout_range);
+            //         server.change_role(role);
+            //     },
+            //     ServerAction::Continue => (),
+            // }
         }
     }
 
-    fn handle_event(server: &RaftServer, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
-        match server.current_role() {
-            Role::Follower => Raft::handle_event_as_follower(server, dispatch, rx, election_timeout),
-            Role::Candidate => Raft::handle_event_as_candidate(server, dispatch, rx, election_timeout),
-            Role::Leader => ServerAction::Continue,
-        }
-    }
-
-    fn handle_event_as_follower(server: &RaftServer, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
-        return match rx.recv_timeout(election_timeout) {
-            Ok(InwardMessage::AppendEntries(ref ae)) => server.append_entries(ae),
-            Ok(InwardMessage::RequestVote(ref rv)) => server.consider_vote(rv),
-            Ok(InwardMessage::Stop) => ServerAction::Stop,
-            Err(RecvTimeoutError::Timeout) => server.become_candidate_leader(dispatch),
-            Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
-            // Ignore events that have no meaning for this role.
-            _ => ServerAction::Continue
-        }
-    }
-
-    fn handle_event_as_candidate(server: &RaftServer, dispatch: &Dispatch, rx: &Receiver<InwardMessage>, election_timeout: Duration) -> ServerAction {
-        return match rx.recv_timeout(election_timeout) {
-            Ok(InwardMessage::AppendEntries(ref ae)) => server.consider_conceding(ae),
-            Ok(InwardMessage::RequestVote(rv)) => ServerAction::Continue,
-            Ok(InwardMessage::RequestVoteResult(rvr)) => ServerAction::Continue,
-            Ok(InwardMessage::Stop) => ServerAction::Stop,
-            Err(RecvTimeoutError::Timeout) => server.start_new_election(dispatch),
-            Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
-            _ => ServerAction::Continue
-        }
-    }
+    // fn handle_event(server: &RaftServer, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
+    //     match server.current_role() {
+    //         Role::Follower => Raft::handle_event_as_follower(server, dispatch, election_timeout),
+    //         Role::Candidate => Raft::handle_event_as_candidate(server, dispatch, election_timeout),
+    //         Role::Leader => ServerAction::Continue,
+    //     }
+    // }
+    //
+    // fn handle_event_as_follower(server: &RaftServer, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
+    //     match rx.recv_timeout(election_timeout) {
+    //         Ok(msg) => {
+    //             match server.consider_other_servers_term() {
+    //                 ServerAction::NewRole(role) =>
+    //             }
+    //         }
+    //
+    //
+    //         Ok(InwardMessage::AppendEntries(ref ae)) => server.append_entries(ae),
+    //         Ok(InwardMessage::RequestVote(ref rv)) => server.consider_vote(rv),
+    //         Ok(InwardMessage::Stop) => ServerAction::Stop,
+    //         Err(RecvTimeoutError::Timeout) => server.become_candidate_leader(dispatch),
+    //         Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
+    //         // Ignore events that have no meaning for this role.
+    //         _ => ServerAction::Continue
+    //     }
+    // }
+    //
+    // fn handle_event_as_candidate(server: &RaftServer, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
+    //     //TODO: The timeout for a candidate is more complex; it may receive results for requested votes. These should not reset the election timeout.
+    //     //TODO: We need a separate thread to timeout the election.
+    //     return match rx.recv_timeout(election_timeout) {
+    //         Ok(InwardMessage::AppendEntries(ref ae)) => server.consider_conceding(ae),
+    //         Ok(InwardMessage::RequestVote(ref rv)) => server.consider_vote(rv),
+    //         Ok(InwardMessage::RequestVoteResult(ref rvr)) => server.collect_vote(rvr),
+    //         Ok(InwardMessage::Stop) => ServerAction::Stop,
+    //         Err(RecvTimeoutError::Timeout) => server.start_new_election(dispatch),
+    //         Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
+    //         _ => ServerAction::Continue
+    //     }
+    // }
 
     // fn report_status(server: &Server, dispatch: &Dispatch) {
     //     dispatch.status.send(server.report_status());
@@ -156,9 +173,16 @@ mod tests {
 
     #[test]
     fn thread_returns_when_stopped() {
-        let (endpoint, dispatch, rx) = Raft::get_channels();
-        let server = Server::new(ServerIdentity::new());
-        endpoint.tx.send(InwardMessage::Stop);
-        Raft::run(&server, &dispatch, &rx, ElectionTimeoutRange::testing());
+        let (endpoint, dispatch) = Raft::get_channels();
+        let this_server_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone());
+        endpoint.tx.send(Envelope {
+            from: this_server_id.clone(),
+            to: Addressee::SingleServer(this_server_id.clone()),
+            message: Message::Stop
+        });
+
+        panic!();
+        Raft::run(&server, &dispatch, ElectionTimeoutRange::testing());
     }
 }
