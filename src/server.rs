@@ -9,7 +9,7 @@ use server_traits::*;
 use server_action::*;
 
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 struct Follower {
     id: ServerIdentity,
     next_index: LogIndex,
@@ -68,15 +68,19 @@ impl Server {
     }
 
     fn update_term(&self, new_term: Term) {
+        {
+            let mut persistent_state = self.persistent_state.borrow_mut();
+            assert!(new_term >= persistent_state.current_term);
+
+            persistent_state.current_term = new_term;
+            persistent_state.voted_for = None;
+        }
+        {
+            let mut volatile_state = self.volatile_state.borrow_mut();
+            volatile_state.followers = None;
+            volatile_state.votes = 0;
+        }
         self.change_role(Role::Follower);
-
-        let mut persistent_state = self.persistent_state.borrow_mut();
-        persistent_state.current_term = new_term;
-        persistent_state.voted_for = None;
-
-        let mut volatile_state = self.volatile_state.borrow_mut();
-        volatile_state.followers = None;
-        volatile_state.votes = 0;
     }
 
     // pub fn report_status(&self) -> Status {

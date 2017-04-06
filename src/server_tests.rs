@@ -1,20 +1,136 @@
-use super::*;
 
+mod new_server {
+    use super::super::*;
 
-#[test]
-fn new_server_is_a_follower() {
-    let server = Server::new(ServerIdentity::new(), Vec::new());
+    #[test]
+    fn is_a_follower() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
 
-    assert_eq!(Role::Follower, server.current_role());
+        assert_eq!(Role::Follower, server.current_role());
+    }
+
+    #[test]
+    fn current_term_is_1() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        assert_eq!(1, server.current_term());
+    }
 }
 
-#[test]
-fn change_role_to_candidate() {
-    let server = Server::new(ServerIdentity::new(), Vec::new());
+mod update_term {
+    use super::super::*;
 
-    server.change_role(Role::Candidate);
+    #[test]
+    fn is_recorded() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
 
-    assert_eq!(Role::Candidate, server.current_role());
+        server.update_term(10);
+
+        assert_eq!(10, server.current_term());
+    }
+
+    #[test]
+    #[should_panic]
+    fn panics_for_a_lower_term() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.update_term(0);
+    }
+
+    #[test]
+    fn changes_candidate_to_follower() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+        server.change_role(Role::Candidate);
+
+        server.update_term(2);
+
+        assert_eq!(Role::Follower, server.current_role());
+    }
+
+    #[test]
+    fn changes_leader_to_follower() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+        server.change_role(Role::Leader);
+
+        server.update_term(2);
+
+        assert_eq!(Role::Follower, server.current_role());
+    }
+
+    #[test]
+    fn clears_servers_vote() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+        server.persistent_state.borrow_mut().voted_for = Some(ServerIdentity::new());
+
+        server.update_term(2);
+
+        assert_eq!(None, server.persistent_state.borrow().voted_for);
+    }
+
+    #[test]
+    fn clears_followers() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+        server.volatile_state.borrow_mut().followers = Some(Vec::new());
+
+        server.update_term(2);
+
+        assert_eq!(None, server.volatile_state.borrow().followers);
+    }
+
+    #[test]
+    fn clears_received_votes() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+        server.volatile_state.borrow_mut().votes = 2;
+
+        server.update_term(2);
+
+        assert_eq!(0, server.volatile_state.borrow().votes);
+    }
+}
+
+mod next_term {
+    use super::super::*;
+
+    #[test]
+    fn increments_the_current_term_from_one_to_two() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.next_term();
+
+        assert_eq!(2, server.current_term());
+    }
+
+    #[test]
+    fn increments_the_current_term_from_33_to_34() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+        server.update_term(33);
+
+        server.next_term();
+
+        assert_eq!(34, server.current_term());
+    }
+}
+
+mod change_role {
+    use super::super::*;
+
+    #[test]
+    fn to_candidate() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.change_role(Role::Candidate);
+
+        assert_eq!(Role::Candidate, server.current_role());
+    }
+
+    #[test]
+    fn to_leader() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.change_role(Role::Leader);
+
+        assert_eq!(Role::Leader, server.current_role());
+    }
 }
 
 mod election {
