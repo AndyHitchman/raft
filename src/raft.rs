@@ -29,7 +29,7 @@ impl Raft {
         let (endpoint, dispatch) = Raft::get_channels();
 
         thread::spawn(move || {
-            let server = Server::new(identity);
+            let server = Server::new(identity, Vec::new());
             Raft::run(&server, &dispatch, election_timeout_range)
         });
 
@@ -63,9 +63,17 @@ impl Raft {
     pub fn run(server: &RaftServer, dispatch: &Dispatch, election_timeout_range: ElectionTimeoutRange) {
         let mut election_timeout = Raft::new_election_timeout(&election_timeout_range);
 
+        //TODO: discard messages not from a server in our current or next config? DoS attack?
         loop {
             let action = match (dispatch.rx.recv_timeout(election_timeout), server.current_role()) {
                 (Ok(envelope), current_role) => {
+                    match envelope.message {
+                        Message::Stop => {
+                            //TODO: Shutdown server and flush.
+                            return;
+                        }
+                        _ => ()
+                    }
                     ServerAction::Continue//server.ensure_term_is_current(envelope.message)
                 },
                 (Err(RecvTimeoutError::Timeout), current_role) => ServerAction::Stop,//server.become_candidate_leader(dispatch),
@@ -175,14 +183,28 @@ mod tests {
     fn thread_returns_when_stopped() {
         let (endpoint, dispatch) = Raft::get_channels();
         let this_server_id = ServerIdentity::new();
-        let server = Server::new(this_server_id.clone());
+        let server = Server::new(this_server_id.clone(), Vec::new());
         endpoint.tx.send(Envelope {
             from: this_server_id.clone(),
             to: Addressee::SingleServer(this_server_id.clone()),
             message: Message::Stop
         });
 
-        panic!();
         Raft::run(&server, &dispatch, ElectionTimeoutRange::testing());
+    }
+
+    #[test]
+    fn candidate_will_start_a_new_term_if_the_election_fails() {
+        let (endpoint, dispatch) = Raft::get_channels();
+        let this_server_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), Vec::new());
+
+        server.start_new_election();
+
+        panic!();
+        // match loopback.recv().unwrap() {
+        //     InwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
+        //     _ => panic!()
+        // };
     }
 }

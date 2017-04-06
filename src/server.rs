@@ -17,18 +17,6 @@ struct Follower {
 }
 
 #[derive(Clone, Debug)]
-enum Vote {
-    For,
-    Against
-}
-
-#[derive(Clone, Debug)]
-struct ElectionResults {
-    id: ServerIdentity,
-    voted: Vote,
-}
-
-#[derive(Clone, Debug)]
 struct PersistentState {
     current_term: Term,
     voted_for: Option<ServerIdentity>,
@@ -39,7 +27,7 @@ struct VolatileState {
     role: Role,
     peers: Vec<ServerIdentity>,
     followers: Option<Vec<Follower>>,
-    election_results: Option<Vec<ElectionResults>>,
+    votes: u32,
 }
 
 pub struct Server {
@@ -50,7 +38,7 @@ pub struct Server {
 
 impl Server {
 
-    pub fn new(identity: ServerIdentity) -> Server {
+    pub fn new(identity: ServerIdentity, peers: Vec<ServerIdentity>) -> Server {
 
         Server {
             identity: identity,
@@ -63,9 +51,9 @@ impl Server {
             volatile_state: RefCell::new(
                 VolatileState {
                     role: Role::Follower,
-                    peers: Vec::new(),
+                    peers: peers,
                     followers: None,
-                    election_results: None
+                    votes: 0
                 }
             )
         }
@@ -80,9 +68,15 @@ impl Server {
     }
 
     fn update_term(&self, new_term: Term) {
+        self.change_role(Role::Follower);
+
         let mut persistent_state = self.persistent_state.borrow_mut();
         persistent_state.current_term = new_term;
         persistent_state.voted_for = None;
+
+        let mut volatile_state = self.volatile_state.borrow_mut();
+        volatile_state.followers = None;
+        volatile_state.votes = 0;
     }
 
     // pub fn report_status(&self) -> Status {
@@ -115,7 +109,6 @@ impl RaftServer for Server {
     fn ensure_term_is_latest(&self, payload: &Payload) -> ServerAction {
         if Server::i_am_out_of_date(self.current_term(), payload.term()) {
             self.update_term(payload.term());
-            self.change_role(Role::Follower);
             ServerAction::NewTerm
         } else {
             ServerAction::Continue
@@ -126,10 +119,9 @@ impl RaftServer for Server {
         self.ensure_term_is_latest(entries);
 
         // If we are a candidate and get append entries for our current or a later term,
-        // we have lost the election, so revert to follower and append. Else ignore.
+        // we have lost the election, so accept leaders term, revert to follower and append. Else ignore.
         if self.current_role() == Role::Candidate && self.current_term() <= entries.term() {
             self.update_term(entries.term());
-            self.change_role(Role::Follower);
         }
 
         if self.current_role() == Role::Follower {
@@ -139,10 +131,35 @@ impl RaftServer for Server {
         ServerAction::Continue
     }
 
+    fn start_new_election(&self) -> ServerAction {
+        self.next_term();
+        self.change_role(Role::Candidate);
+
+        let request_vote = RequestVotePayload {
+            term: self.persistent_state.borrow().current_term,
+            candidate_id: self.identity.clone(),
+            last_log_index: 0,
+            last_log_term: 0
+        };
+
+        if let ServerAction::Reply(Message::RequestVoteResult(ref rvr)) = self.consider_vote(&request_vote) {
+            let collected_vote = self.collect_vote(rvr);
+            if let ServerAction::Broadcast(Message::AppendEntries(_)) = collected_vote {
+                // The degenerate case where there is only one server (this one) and no peers.
+                // But this is allowable.
+                collected_vote
+            } else {
+                // Where we have peers, ask for votes.
+                ServerAction::Broadcast(Message::RequestVote(request_vote))
+            }
+        } else {
+            unreachable!()
+        }
+    }
+
     fn consider_vote(&self, request_vote: &RequestVotePayload) -> ServerAction {
         self.ensure_term_is_latest(request_vote);
 
-        //QUESTION:: should we only vote for a server in our current or next config? DoS attack?
         let mut payload = RequestVoteResultPayload {
             term: self.current_term(),
             vote_granted: false,
@@ -157,23 +174,43 @@ impl RaftServer for Server {
         ServerAction::Reply(Message::RequestVoteResult(payload))
     }
 
-    fn start_new_election(&self) -> ServerAction {
-        self.next_term();
-        self.change_role(Role::Candidate);
+    fn collect_vote(&self, request_vote_result: &RequestVoteResultPayload) -> ServerAction {
+        self.ensure_term_is_latest(request_vote_result);
 
-        let request_vote =
-            RequestVotePayload {
-                term: self.persistent_state.borrow().current_term,
-                candidate_id: self.identity.clone(),
-                last_log_index: 0,
-                last_log_term: 0
-            };
+        if self.current_role() == Role::Candidate {
+            let has_more_than_half_the_votes: bool;
 
-        self.consider_vote(&request_vote);
-        ServerAction::Broadcast(Message::RequestVote(request_vote))
+            {
+                let mut volatile_state = self.volatile_state.borrow_mut();
+
+                if request_vote_result.vote_granted {
+                    volatile_state.votes += 1;
+                }
+
+                has_more_than_half_the_votes =
+                    volatile_state.votes as usize > volatile_state.peers.len() / 2;
+            }
+
+            if has_more_than_half_the_votes {
+                self.change_role(Role::Leader);
+
+                return ServerAction::Broadcast(Message::AppendEntries(
+                    AppendEntriesPayload {
+                        term: self.current_term(),
+                        leader_id: self.identity.clone(),
+                        prev_log_index: 0,
+                        prev_log_term: 0,
+                        entries: Vec::new(),
+                        leaders_commit: 0,
+                    }
+                ))
+            }
+        }
+
+        ServerAction::Continue
     }
 
-    fn collect_vote(&self, request_vote_result: &RequestVoteResultPayload) -> ServerAction {
+    fn election_timeout_occurred(&self) -> ServerAction {
 
         ServerAction::Continue
     }
@@ -182,44 +219,31 @@ impl RaftServer for Server {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-    use std::sync::mpsc::channel;
     use super::*;
-    use raft::Raft;
-    use types::*;
-
 
     #[test]
     fn new_server_is_a_follower() {
-        let (endpoint, dispatch) = Raft::get_channels();
+        let server = Server::new(ServerIdentity::new(), Vec::new());
 
-        let server = Server::new(ServerIdentity::new());
         assert_eq!(Role::Follower, server.current_role());
     }
 
     #[test]
     fn change_role_to_candidate() {
-        let (endpoint, dispatch) = Raft::get_channels();
-        let server = Server::new(ServerIdentity::new());
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
         server.change_role(Role::Candidate);
 
         assert_eq!(Role::Candidate, server.current_role());
-
     }
 
     mod election {
         use super::super::*;
-        use std::time::Duration;
-        use std::thread;
-        use std::sync::{Arc,Mutex};
-        use raft::Raft;
-        use types::*;
 
         #[test]
         fn follow_will_start_election_if_no_leader_appends_entires() {
-            let (endpoint, dispatch) = Raft::get_channels();
             let this_server_id = ServerIdentity::new();
-            let server = Server::new(this_server_id.clone());
+            let server = Server::new(this_server_id.clone(), Vec::new());
 
             let result = server.start_new_election();
 
@@ -232,8 +256,7 @@ mod tests {
 
         #[test]
         fn an_election_starts_a_new_term() {
-            let (endpoint, dispatch) = Raft::get_channels();
-            let server = Server::new(ServerIdentity::new());
+            let server = Server::new(ServerIdentity::new(), Vec::new());
             server.update_term(1);
 
             let result = server.start_new_election();
@@ -247,8 +270,7 @@ mod tests {
 
         #[test]
         fn follower_will_vote_for_the_first_candidate_that_requests_a_vote() {
-            let (endpoint, dispatch) = Raft::get_channels();
-            let server = Server::new(ServerIdentity::new());
+            let server = Server::new(ServerIdentity::new(), Vec::new());
             let other_server_id = ServerIdentity::new();
 
             server.consider_vote(&RequestVotePayload {
@@ -263,8 +285,7 @@ mod tests {
 
         #[test]
         fn follower_will_revote_if_there_is_a_new_election() {
-            let (endpoint, dispatch) = Raft::get_channels();
-            let server = Server::new(ServerIdentity::new());
+            let server = Server::new(ServerIdentity::new(), Vec::new());
             let old_candidate_id = ServerIdentity::new();
             let new_candidate_id = ServerIdentity::new();
             {
@@ -286,11 +307,10 @@ mod tests {
 
         #[test]
         fn follower_will_only_vote_once() {
-            let (endpoint, dispatch) = Raft::get_channels();
             let this_server_id = ServerIdentity::new();
             let candidate_id = ServerIdentity::new();
             let another_candidate_id = ServerIdentity::new();
-            let server = Server::new(this_server_id);
+            let server = Server::new(this_server_id, Vec::new());
             server.persistent_state.borrow_mut().voted_for = Some(another_candidate_id.clone());
 
             server.consider_vote(&RequestVotePayload {
@@ -305,10 +325,9 @@ mod tests {
 
         #[test]
         fn follower_will_tell_candidate_it_has_got_their_vote() {
-            let (endpoint, dispatch) = Raft::get_channels();
             let this_server_id = ServerIdentity::new();
             let candidate_id = ServerIdentity::new();
-            let server = Server::new(this_server_id.clone());
+            let server = Server::new(this_server_id.clone(), Vec::new());
 
             let result = server.consider_vote(&RequestVotePayload {
                 term: 2,
@@ -327,9 +346,8 @@ mod tests {
 
         #[test]
         fn candidate_votes_for_itself() {
-            let (endpoint, dispatch) = Raft::get_channels();
             let this_server_id = ServerIdentity::new();
-            let server = Server::new(this_server_id.clone());
+            let server = Server::new(this_server_id.clone(), Vec::new());
 
             server.start_new_election();
 
@@ -337,25 +355,9 @@ mod tests {
         }
 
         #[test]
-        fn candidate_will_start_a_new_term_if_the_election_fails() {
-            let (endpoint, dispatch) = Raft::get_channels();
-            let this_server_id = ServerIdentity::new();
-            let server = Server::new(this_server_id.clone());
-
-            server.start_new_election();
-
-            panic!();
-            // match loopback.recv().unwrap() {
-            //     InwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
-            //     _ => panic!()
-            // };
-        }
-
-        #[test]
         fn candidate_will_ignore_append_entries_from_an_out_of_date_candidate() {
-            let (endpoint, dispatch) = Raft::get_channels();
-            let server = Server::new(ServerIdentity::new());
-            server.persistent_state.borrow_mut().current_term = 3;
+            let server = Server::new(ServerIdentity::new(), Vec::new());
+            server.update_term(3);
             server.volatile_state.borrow_mut().role = Role::Candidate;
 
             let result = server.append_entries(&AppendEntriesPayload {
@@ -372,9 +374,8 @@ mod tests {
 
         #[test]
         fn candidate_will_return_to_a_follower_and_vote_for_a_new_candidate_with_a_later_term() {
-            let (endpoint, dispatch) = Raft::get_channels();
             let this_server_id = ServerIdentity::new();
-            let server = Server::new(this_server_id.clone());
+            let server = Server::new(this_server_id.clone(), Vec::new());
             let new_candidate_id = ServerIdentity::new();
             {
                 server.volatile_state.borrow_mut().role = Role::Candidate;
@@ -390,19 +391,43 @@ mod tests {
                 last_log_index: 0,
             };
 
-            server.ensure_term_is_latest(rv);
             server.consider_vote(rv);
 
             assert_eq!(4, server.persistent_state.borrow().current_term);
             assert_eq!(Some(new_candidate_id), server.persistent_state.borrow().voted_for);
-            assert_eq!(Role::Follower, server.volatile_state.borrow().role);
+            assert_eq!(Role::Follower, server.current_role());
+        }
+
+        #[test]
+        fn candidate_will_continue_as_a_candiate_when_a_competing_candidate_in_the_same_term_requests_a_vote() {
+            let this_server_id = ServerIdentity::new();
+            let server = Server::new(this_server_id.clone(), Vec::new());
+            let new_candidate_id = ServerIdentity::new();
+            {
+                server.volatile_state.borrow_mut().role = Role::Candidate;
+                let mut persistent_state = server.persistent_state.borrow_mut();
+                persistent_state.current_term = 4;
+                persistent_state.voted_for = Some(this_server_id.clone());
+            }
+
+            let rv = &RequestVotePayload {
+                term: 4,
+                candidate_id: new_candidate_id.clone(),
+                last_log_term: 1,
+                last_log_index: 0,
+            };
+
+            server.consider_vote(rv);
+
+            assert_eq!(4, server.persistent_state.borrow().current_term);
+            assert_eq!(Some(this_server_id), server.persistent_state.borrow().voted_for);
+            assert_eq!(Role::Candidate, server.current_role());
         }
 
         #[test]
         fn candidate_will_concede_election_if_it_gets_entries_to_append_for_the_same_term() {
-            let (endpoint, dispatch) = Raft::get_channels();
-            let server = Server::new(ServerIdentity::new());
-            server.persistent_state.borrow_mut().current_term = 3;
+            let server = Server::new(ServerIdentity::new(), Vec::new());
+            server.update_term(3);
             server.volatile_state.borrow_mut().role = Role::Candidate;
 
             let result = server.append_entries(&AppendEntriesPayload {
@@ -422,12 +447,11 @@ mod tests {
 
         #[test]
         fn candidate_will_concede_election_if_it_gets_entries_to_append_for_a_later_term() {
-            let (endpoint, dispatch) = Raft::get_channels();
-            let server = Server::new(ServerIdentity::new());
-            server.persistent_state.borrow_mut().current_term = 3;
+            let server = Server::new(ServerIdentity::new(), Vec::new());
+            server.update_term(3);
             server.volatile_state.borrow_mut().role = Role::Candidate;
 
-            let rv = &AppendEntriesPayload {
+            let ae = &AppendEntriesPayload {
                 term: 4,
                 leader_id: ServerIdentity::new(),
                 prev_log_index: 0,
@@ -436,9 +460,9 @@ mod tests {
                 leaders_commit: 1,
             };
 
-            let result = server.ensure_term_is_latest(rv);
+            let result = server.append_entries(ae);
 
-            assert_eq!(ServerAction::NewTerm, result);
+            assert_eq!(ServerAction::Continue, result);
             assert_eq!(4, server.current_term());
             assert_eq!(None, server.persistent_state.borrow().voted_for);
             assert_eq!(Role::Follower, server.current_role());
@@ -447,13 +471,21 @@ mod tests {
 
         #[test]
         fn candidate_becomes_leader_on_receiving_majority_of_votes() {
-            let (endpoint, dispatch) = Raft::get_channels();
             let this_server_id = ServerIdentity::new();
-            let server = Server::new(this_server_id.clone());
+            let server = Server::new(this_server_id.clone(), Vec::new());
+            server.update_term(5);
 
-            panic!()
-            // let actual_status = endpoint.status.recv().unwrap();
-            // assert_eq!(Role::Leader, actual_status.role)
+            let result = server.start_new_election();
+
+            assert_eq!(6, server.current_term());
+            match result {
+                ServerAction::Broadcast(Message::AppendEntries(ref ae)) => {
+                    assert_eq!(this_server_id.clone(), ae.leader_id);
+                    assert_eq!(6, ae.term);
+                }
+                _ => panic!()
+            }
+            assert_eq!(Role::Leader, server.current_role());
         }
     }
 }

@@ -11,4 +11,5 @@ pub trait RaftServer {
 
     fn ensure_term_is_latest(&self, &Payload) -> ServerAction;
     fn start_new_election(&self) -> ServerAction;
+    fn election_timeout_occurred(&self) -> ServerAction;
 }

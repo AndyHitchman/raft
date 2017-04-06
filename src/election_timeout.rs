@@ -1,4 +1,4 @@
-use types::*;
+//! A set of election timeouts designed for different network topologies.
 
 pub struct ElectionTimeoutRange {
     pub minimum_milliseconds: u64,
