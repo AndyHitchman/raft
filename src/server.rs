@@ -241,8 +241,23 @@ mod tests {
         use super::super::*;
 
         #[test]
-        fn follow_will_start_election_if_no_leader_appends_entires() {
+        fn only_server_will_start_election_if_no_leader_appends_entries_and_elect_itself() {
             let this_server_id = ServerIdentity::new();
+            let server = Server::new(this_server_id.clone(), Vec::new());
+
+            let result = server.start_new_election();
+
+            if let ServerAction::Broadcast(Message::AppendEntries(ae)) = result {
+                assert_eq!(this_server_id, ae.leader_id);
+            } else {
+                panic!();
+            };
+        }
+
+        #[test]
+        fn follower_will_start_election_if_no_leader_appends_entries() {
+            let this_server_id = ServerIdentity::new();
+            //TODO: Add peers
             let server = Server::new(this_server_id.clone(), Vec::new());
 
             let result = server.start_new_election();
@@ -261,8 +276,9 @@ mod tests {
 
             let result = server.start_new_election();
 
-            if let ServerAction::Broadcast(Message::RequestVote(rv)) = result {
-                assert_eq!(2, rv.term());
+            // No peers means self is elected leader immediately.
+            if let ServerAction::Broadcast(Message::AppendEntries(ae)) = result {
+                assert_eq!(2, ae.term());
             } else {
                 panic!();
             };
