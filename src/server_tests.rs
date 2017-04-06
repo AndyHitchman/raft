@@ -30,6 +30,17 @@ mod update_term {
     }
 
     #[test]
+    fn doesnt_panic_for_same_term() {
+        //Ergo we lost this election, same term.
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.update_term(2);
+        server.update_term(2);
+
+        assert_eq!(2, server.current_term());
+    }
+
+    #[test]
     #[should_panic]
     fn panics_for_a_lower_term() {
         let server = Server::new(ServerIdentity::new(), Vec::new());
