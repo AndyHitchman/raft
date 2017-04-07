@@ -390,24 +390,6 @@ mod consider_vote {
     }
 
     #[test]
-    fn candidate_will_ignore_append_entries_from_an_out_of_date_candidate() {
-        let server = Server::new(ServerIdentity::new(), Vec::new());
-        server.update_term(3);
-        server.volatile_state.borrow_mut().role = Role::Candidate;
-
-        let result = server.append_entries(&AppendEntriesPayload {
-            term: 2,
-            leader_id: ServerIdentity::new(),
-            prev_log_index: 0,
-            prev_log_term: 1,
-            entries: vec![],
-            leaders_commit: 1,
-        });
-
-        assert_eq!(ServerAction::Continue, result);
-    }
-
-    #[test]
     fn candidate_will_return_to_a_follower_and_vote_for_a_new_candidate_with_a_later_term() {
         let this_server_id = ServerIdentity::new();
         let server = Server::new(this_server_id.clone(), Vec::new());
@@ -457,6 +439,28 @@ mod consider_vote {
         assert_eq!(4, server.persistent_state.borrow().current_term);
         assert_eq!(Some(this_server_id), server.persistent_state.borrow().voted_for);
         assert_eq!(Role::Candidate, server.current_role());
+    }
+}
+
+mod append_entries {
+    use super::super::*;
+
+    #[test]
+    fn candidate_will_ignore_append_entries_from_an_out_of_date_candidate() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+        server.update_term(3);
+        server.volatile_state.borrow_mut().role = Role::Candidate;
+
+        let result = server.append_entries(&AppendEntriesPayload {
+            term: 2,
+            leader_id: ServerIdentity::new(),
+            prev_log_index: 0,
+            prev_log_term: 1,
+            entries: vec![],
+            leaders_commit: 1,
+        });
+
+        assert_eq!(ServerAction::Continue, result);
     }
 
     #[test]
