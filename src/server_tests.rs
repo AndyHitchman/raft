@@ -132,28 +132,6 @@ mod next_term {
     }
 }
 
-mod change_role {
-    use super::super::*;
-
-    #[test]
-    fn to_candidate() {
-        let server = Server::new(ServerIdentity::new(), Vec::new());
-
-        server.change_role(Role::Candidate);
-
-        assert_eq!(Role::Candidate, server.current_role());
-    }
-
-    #[test]
-    fn to_leader() {
-        let server = Server::new(ServerIdentity::new(), Vec::new());
-
-        server.change_role(Role::Leader);
-
-        assert_eq!(Role::Leader, server.current_role());
-    }
-}
-
 mod i_am_out_of_date {
     use super::super::*;
 
@@ -214,11 +192,43 @@ mod assert_term_is_current {
     }
 }
 
-mod election {
+mod change_role {
     use super::super::*;
 
     #[test]
-    fn only_server_will_start_election_if_no_leader_appends_entries_and_elect_itself() {
+    fn to_candidate() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.change_role(Role::Candidate);
+
+        assert_eq!(Role::Candidate, server.current_role());
+    }
+
+    #[test]
+    fn to_leader() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.change_role(Role::Leader);
+
+        assert_eq!(Role::Leader, server.current_role());
+    }
+}
+
+mod start_new_election {
+    use super::super::*;
+
+    #[test]
+    fn single_server_will_self_appoint() {
+        let this_server_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), Vec::new());
+
+        server.start_new_election();
+
+        assert_eq!(Role::Leader, server.current_role());
+    }
+
+    #[test]
+    fn self_appointed_leader_will_broadcast_append_entires() {
         let this_server_id = ServerIdentity::new();
         let server = Server::new(this_server_id.clone(), Vec::new());
 
@@ -232,10 +242,21 @@ mod election {
     }
 
     #[test]
-    fn follower_will_start_election_if_no_leader_appends_entries() {
+    fn candidate_votes_for_itself() {
         let this_server_id = ServerIdentity::new();
-        //TODO: Add peers
         let server = Server::new(this_server_id.clone(), Vec::new());
+
+        server.start_new_election();
+
+        assert_eq!(Some(this_server_id), server.persistent_state.borrow().voted_for);
+    }
+
+
+    #[test]
+    fn follower_will_broadcast_request_for_votes() {
+        let this_server_id = ServerIdentity::new();
+        let peer_1_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), vec![peer_1_id]);
 
         let result = server.start_new_election();
 
@@ -247,7 +268,34 @@ mod election {
     }
 
     #[test]
-    fn an_election_starts_a_new_term() {
+    fn follower_with_peers_becomes_candidate() {
+        let this_server_id = ServerIdentity::new();
+        let peer_1_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), vec![peer_1_id]);
+
+        server.start_new_election();
+
+        assert_eq!(Role::Candidate, server.current_role());
+    }
+
+    #[test]
+    fn a_peered_election_starts_a_new_term() {
+        let this_server_id = ServerIdentity::new();
+        let peer_1_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), vec![peer_1_id]);
+
+        let result = server.start_new_election();
+
+        // No peers means self is elected leader immediately.
+        if let ServerAction::Broadcast(Message::RequestVote(rv)) = result {
+            assert_eq!(2, rv.term());
+        } else {
+            panic!();
+        };
+    }
+
+    #[test]
+    fn a_self_appointing_election_starts_a_new_term() {
         let server = Server::new(ServerIdentity::new(), Vec::new());
         server.update_term(1);
 
@@ -260,6 +308,10 @@ mod election {
             panic!();
         };
     }
+}
+
+mod consider_vote {
+    use super::super::*;
 
     #[test]
     fn follower_will_vote_for_the_first_candidate_that_requests_a_vote() {
@@ -335,16 +387,6 @@ mod election {
         } else {
             panic!();
         };
-    }
-
-    #[test]
-    fn candidate_votes_for_itself() {
-        let this_server_id = ServerIdentity::new();
-        let server = Server::new(this_server_id.clone(), Vec::new());
-
-        server.start_new_election();
-
-        assert_eq!(Some(this_server_id), server.persistent_state.borrow().voted_for);
     }
 
     #[test]

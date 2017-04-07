@@ -146,18 +146,19 @@ impl RaftServer for Server {
             last_log_term: 0
         };
 
-        if let ServerAction::Reply(Message::RequestVoteResult(ref rvr)) = self.consider_vote(&request_vote) {
-            let collected_vote = self.collect_vote(rvr);
-            if let ServerAction::Broadcast(Message::AppendEntries(_)) = collected_vote {
-                // The degenerate case where there is only one server (this one) and no peers.
-                // But this is allowable.
-                collected_vote
-            } else {
-                // Where we have peers, ask for votes.
-                ServerAction::Broadcast(Message::RequestVote(request_vote))
-            }
-        } else {
-            unreachable!()
+        match self.consider_vote(&request_vote) {
+            ServerAction::Reply(Message::RequestVoteResult(ref rvr)) => {
+                let collected_vote = self.collect_vote(rvr);
+                if let ServerAction::Broadcast(Message::AppendEntries(_)) = collected_vote {
+                    // The degenerate case where there is only one server (this one) and no peers.
+                    // But this is allowable.
+                    collected_vote
+                } else {
+                    // Where we have peers, ask for votes.
+                    ServerAction::Broadcast(Message::RequestVote(request_vote))
+                }
+            },
+            _ => unreachable!()
         }
     }
 
@@ -191,8 +192,9 @@ impl RaftServer for Server {
                     volatile_state.votes += 1;
                 }
 
+                // Count self and peers.
                 has_more_than_half_the_votes =
-                    volatile_state.votes as usize > volatile_state.peers.len() / 2;
+                    volatile_state.votes * 2 > volatile_state.peers.len() as u32 + 1;
             }
 
             if has_more_than_half_the_votes {
