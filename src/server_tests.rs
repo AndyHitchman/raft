@@ -120,6 +120,16 @@ mod next_term {
 
         assert_eq!(34, server.current_term());
     }
+
+    #[test]
+    fn changes_candidate_to_follower() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+        server.change_role(Role::Candidate);
+
+        server.next_term();
+
+        assert_eq!(Role::Follower, server.current_role());
+    }
 }
 
 mod change_role {
@@ -141,6 +151,66 @@ mod change_role {
         server.change_role(Role::Leader);
 
         assert_eq!(Role::Leader, server.current_role());
+    }
+}
+
+mod i_am_out_of_date {
+    use super::super::*;
+
+    #[test]
+    fn says_false_when_my_term_equals_other_term() {
+        assert_eq!(false, Server::i_am_out_of_date(12, 12));
+    }
+
+    #[test]
+    fn says_false_when_my_term_is_greater_then_other_term() {
+        assert_eq!(false, Server::i_am_out_of_date(13, 12));
+    }
+
+    #[test]
+    fn says_true_when_my_term_is_less_then_other_term() {
+        assert_eq!(true, Server::i_am_out_of_date(11, 12));
+    }
+}
+
+mod assert_term_is_current {
+    use super::super::*;
+
+    #[test]
+    fn will_not_panic_if_this_term_is_current() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.assert_term_is_current(
+            &RequestVoteResultPayload {
+                term: 1,
+                vote_granted: false,
+            }
+        )
+    }
+
+    #[test]
+    fn will_not_panic_if_this_term_is_later() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.assert_term_is_current(
+            &RequestVoteResultPayload {
+                term: 0,
+                vote_granted: false,
+            }
+        )
+    }
+
+    #[test]
+    #[should_panic]
+    fn panics_if_this_term_is_out_of_date() {
+        let server = Server::new(ServerIdentity::new(), Vec::new());
+
+        server.assert_term_is_current(
+            &RequestVoteResultPayload {
+                term: 2,
+                vote_granted: false,
+            }
+        )
     }
 }
 
