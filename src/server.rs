@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use messages::*;
 use types::*;
-use server_traits::*;
+use raft::RaftServer;
 use server_action::*;
 
 
@@ -83,20 +83,18 @@ impl Server {
         self.change_role(Role::Follower);
     }
 
-    // pub fn report_status(&self) -> Status {
-    //     Status {
-    //         term: self.current_term(),
-    //         role: self.current_role(),
-    //         commit_index: 0 //svr.commit_index
-    //     }
-    // }
-
     fn i_am_out_of_date(my_term: Term, other_candidates_term: Term) -> bool {
         other_candidates_term > my_term
     }
 
     fn assert_term_is_current(&self, payload: &Payload) {
         assert!(!Server::i_am_out_of_date(self.current_term(), payload.term()));
+    }
+
+    fn ensure_term_is_latest(&self, payload: &Payload) {
+        if Server::i_am_out_of_date(self.current_term(), payload.term()) {
+            self.update_term(payload.term());
+        }
     }
 
     fn change_role(&self, new_role: Role) {
@@ -106,17 +104,12 @@ impl Server {
 
 impl RaftServer for Server {
 
-    fn current_role(&self) -> Role {
-        self.volatile_state.borrow().role.clone()
+    fn get_identity(&self) -> ServerIdentity {
+        self.identity.clone()
     }
 
-    fn ensure_term_is_latest(&self, payload: &Payload) -> ServerAction {
-        if Server::i_am_out_of_date(self.current_term(), payload.term()) {
-            self.update_term(payload.term());
-            ServerAction::NewTerm
-        } else {
-            ServerAction::Continue
-        }
+    fn current_role(&self) -> Role {
+        self.volatile_state.borrow().role.clone()
     }
 
     fn append_entries(&self, entries: &AppendEntriesPayload) -> ServerAction {
@@ -135,6 +128,19 @@ impl RaftServer for Server {
         ServerAction::Continue
     }
 
+    fn append_entries_result(&self, result: &AppendEntriesResultPayload) -> ServerAction {
+        unimplemented!();
+        ServerAction::Continue
+    }
+
+    fn broadcast_heartbeat(&self) -> ServerAction {
+        self.broadcast_log_changes()
+    }
+
+    fn broadcast_log_changes(&self) -> ServerAction {
+        ServerAction::Continue
+    }
+
     fn start_new_election(&self) -> ServerAction {
         self.next_term();
         self.change_role(Role::Candidate);
@@ -146,7 +152,7 @@ impl RaftServer for Server {
             last_log_term: 0
         };
 
-        match self.consider_vote(&request_vote) {
+        match self.consider_vote_request(&request_vote) {
             ServerAction::Reply(Message::RequestVoteResult(ref rvr)) => {
                 let collected_vote = self.collect_vote(rvr);
                 if let ServerAction::Broadcast(Message::AppendEntries(_)) = collected_vote {
@@ -162,7 +168,7 @@ impl RaftServer for Server {
         }
     }
 
-    fn consider_vote(&self, request_vote: &RequestVotePayload) -> ServerAction {
+    fn consider_vote_request(&self, request_vote: &RequestVotePayload) -> ServerAction {
         self.ensure_term_is_latest(request_vote);
 
         let mut payload = RequestVoteResultPayload {

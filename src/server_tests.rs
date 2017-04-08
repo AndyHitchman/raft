@@ -318,7 +318,7 @@ mod consider_vote {
         let server = Server::new(ServerIdentity::new(), Vec::new());
         let other_server_id = ServerIdentity::new();
 
-        server.consider_vote(&RequestVotePayload {
+        server.consider_vote_request(&RequestVotePayload {
             term: 2,
             candidate_id: other_server_id.clone(),
             last_log_term: 1,
@@ -339,7 +339,7 @@ mod consider_vote {
             persistent_state.voted_for = Some(old_candidate_id);
         }
 
-        server.consider_vote(&RequestVotePayload {
+        server.consider_vote_request(&RequestVotePayload {
             term: 4,
             candidate_id: new_candidate_id.clone(),
             last_log_term: 1,
@@ -358,7 +358,7 @@ mod consider_vote {
         let server = Server::new(this_server_id, Vec::new());
         server.persistent_state.borrow_mut().voted_for = Some(another_candidate_id.clone());
 
-        server.consider_vote(&RequestVotePayload {
+        server.consider_vote_request(&RequestVotePayload {
             term: 1,
             candidate_id: candidate_id,
             last_log_term: 1,
@@ -374,7 +374,7 @@ mod consider_vote {
         let candidate_id = ServerIdentity::new();
         let server = Server::new(this_server_id.clone(), Vec::new());
 
-        let result = server.consider_vote(&RequestVotePayload {
+        let result = server.consider_vote_request(&RequestVotePayload {
             term: 2,
             candidate_id: candidate_id.clone(),
             last_log_term: 1,
@@ -408,7 +408,7 @@ mod consider_vote {
             last_log_index: 0,
         };
 
-        server.consider_vote(rv);
+        server.consider_vote_request(rv);
 
         assert_eq!(4, server.persistent_state.borrow().current_term);
         assert_eq!(Some(new_candidate_id), server.persistent_state.borrow().voted_for);
@@ -434,11 +434,100 @@ mod consider_vote {
             last_log_index: 0,
         };
 
-        server.consider_vote(rv);
+        server.consider_vote_request(rv);
 
         assert_eq!(4, server.persistent_state.borrow().current_term);
         assert_eq!(Some(this_server_id), server.persistent_state.borrow().voted_for);
         assert_eq!(Role::Candidate, server.current_role());
+    }
+}
+
+mod collect_vote {
+    use super::super::*;
+
+    #[test]
+    fn candidate_becomes_leader_on_receiving_majority_of_votes() {
+        let this_server_id = ServerIdentity::new();
+        let peer_1_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), vec![peer_1_id]);
+        server.update_term(2);
+
+        server.start_new_election();
+        server.collect_vote(
+            &RequestVoteResultPayload {
+                term: 3,
+                vote_granted: true,
+            }
+        );
+
+        assert_eq!(Role::Leader, server.current_role());
+    }
+
+    #[test]
+    fn candidate_is_not_promoted_when_other_peer_denies_vote() {
+        let this_server_id = ServerIdentity::new();
+        let peer_1_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), vec![peer_1_id]);
+        server.update_term(2);
+
+        server.start_new_election();
+        let result = server.collect_vote(
+            &RequestVoteResultPayload {
+                term: 3,
+                vote_granted: false,
+            }
+        );
+
+        assert_eq!(Role::Candidate, server.current_role());
+        assert_eq!(ServerAction::Continue, result);
+    }
+
+    #[test]
+    fn candidate_is_not_promoted_when_vote_does_not_give_balance_of_support() {
+        let this_server_id = ServerIdentity::new();
+        let peer_1_id = ServerIdentity::new();
+        let peer_2_id = ServerIdentity::new();
+        let peer_3_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), vec![peer_1_id, peer_2_id, peer_3_id]);
+        server.update_term(2);
+
+        server.start_new_election();
+        let result = server.collect_vote(
+            &RequestVoteResultPayload {
+                term: 3,
+                vote_granted: true,
+            }
+        );
+
+        assert_eq!(Role::Candidate, server.current_role());
+        assert_eq!(ServerAction::Continue, result);
+    }
+
+    #[test]
+    fn candidate_is_promoted_when_vote_gives_balance_of_support() {
+        let this_server_id = ServerIdentity::new();
+        let peer_1_id = ServerIdentity::new();
+        let peer_2_id = ServerIdentity::new();
+        let peer_3_id = ServerIdentity::new();
+        let server = Server::new(this_server_id.clone(), vec![peer_1_id, peer_2_id, peer_3_id]);
+        server.update_term(2);
+
+        server.start_new_election();
+        server.collect_vote(
+            &RequestVoteResultPayload {
+                term: 3,
+                vote_granted: true,
+            }
+        );
+
+        server.collect_vote(
+            &RequestVoteResultPayload {
+                term: 3,
+                vote_granted: true,
+            }
+        );
+
+        assert_eq!(Role::Leader, server.current_role());
     }
 }
 
@@ -506,24 +595,13 @@ mod append_entries {
         assert_eq!(None, server.persistent_state.borrow().voted_for);
         assert_eq!(Role::Follower, server.current_role());
     }
+}
 
+mod broadcast_heartbeat {
+    use super::super::*;
 
     #[test]
-    fn candidate_becomes_leader_on_receiving_majority_of_votes() {
-        let this_server_id = ServerIdentity::new();
-        let server = Server::new(this_server_id.clone(), Vec::new());
-        server.update_term(5);
-
-        let result = server.start_new_election();
-
-        assert_eq!(6, server.current_term());
-        match result {
-            ServerAction::Broadcast(Message::AppendEntries(ref ae)) => {
-                assert_eq!(this_server_id.clone(), ae.leader_id);
-                assert_eq!(6, ae.term);
-            }
-            _ => panic!()
-        }
-        assert_eq!(Role::Leader, server.current_role());
+    fn test_name() {
+        unimplemented!()
     }
 }

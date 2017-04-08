@@ -1,19 +1,29 @@
 //! The main entry point for a host process.
 
-use std::time::Duration;
 use std::thread;
 use std::sync::mpsc::{channel,Receiver,RecvTimeoutError};
-
-use rand;
-use rand::Rng;
 
 use types::{ServerIdentity,Role};
 use election_timeout::ElectionTimeoutRange;
 use messages::*;
-use server_traits::*;
 use server_action::*;
 use server::Server;
 
+
+pub trait RaftServer {
+    fn get_identity(&self) -> ServerIdentity;
+    fn current_role(&self) -> Role;
+
+    fn broadcast_heartbeat(&self) -> ServerAction;
+    fn broadcast_log_changes(&self) -> ServerAction;
+    fn append_entries(&self, &AppendEntriesPayload) -> ServerAction;
+    fn append_entries_result(&self, &AppendEntriesResultPayload) -> ServerAction;
+
+    fn start_new_election(&self) -> ServerAction;
+    fn election_timeout_occurred(&self) -> ServerAction;
+    fn consider_vote_request(&self, &RequestVotePayload) -> ServerAction;
+    fn collect_vote(&self, &RequestVoteResultPayload) -> ServerAction;
+}
 
 
 pub struct Raft {}
@@ -51,160 +61,71 @@ impl Raft {
         )
     }
 
-    fn new_election_timeout(election_timeout_range: &ElectionTimeoutRange) -> Duration {
-        Duration::from_millis(
-            rand::thread_rng().gen_range(
-                election_timeout_range.minimum_milliseconds as u64,
-                election_timeout_range.maximum_milliseconds as u64 + 1
-            )
-        )
-    }
 
     pub fn run(server: &RaftServer, dispatch: &Dispatch, election_timeout_range: ElectionTimeoutRange) {
-        let mut election_timeout = Raft::new_election_timeout(&election_timeout_range);
+        let mut timeout = election_timeout_range.new_timeout();
 
-        //TODO: discard messages not from a server in our current or next config? DoS attack?
         loop {
-            let action = match (dispatch.rx.recv_timeout(election_timeout), server.current_role()) {
-                (Ok(envelope), current_role) => {
+            let received = dispatch.rx.recv_timeout(timeout);
+            //TODO: discard messages not from a server in our current or next config? DoS attack?
+
+            let next_action = match received {
+                Ok(ref envelope) => {
                     match envelope.message {
+                        Message::AppendEntries(ref ae) => server.append_entries(ae),
+                        Message::AppendEntriesResult(ref aer) => server.append_entries_result(aer),
+                        Message::RequestVote(ref rv) => server.consider_vote_request(rv),
+                        Message::RequestVoteResult(ref rvr) => server.collect_vote(rvr),
                         Message::Stop => {
                             //TODO: Shutdown server and flush.
-                            return;
+                            ServerAction::Stop
                         }
-                        _ => ()
                     }
-                    ServerAction::Continue//server.ensure_term_is_current(envelope.message)
                 },
-                (Err(RecvTimeoutError::Timeout), current_role) => ServerAction::Stop,//server.become_candidate_leader(dispatch),
-                (Err(RecvTimeoutError::Disconnected), _) => ServerAction::Stop,
+                Err(RecvTimeoutError::Timeout) => {
+                    match server.current_role() {
+                        Role::Leader => server.broadcast_heartbeat(),
+                        Role::Follower | Role::Candidate => server.start_new_election(),
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
             };
 
-            // match Raft::handle_event(server, dispatch, election_timeout) {
-            //     ServerAction::Stop => return,
-            //     ServerAction::NewRole(role) => {
-            //         election_timeout = Raft::new_election_timeout(&election_timeout_range);
-            //         server.change_role(role);
-            //     },
-            //     ServerAction::Continue => (),
-            // }
+            match next_action {
+                ServerAction::NewTerm => {
+                    timeout = match server.current_role() {
+                        Role::Leader => election_timeout_range.leader_heartbeat(),
+                        _ => election_timeout_range.new_timeout(),
+                    };
+                },
+                ServerAction::Broadcast(message) => {
+                    dispatch.tx.send(
+                        Envelope {
+                            from: server.get_identity(),
+                            to: Addressee::Broadcast,
+                            message: message,
+                        }
+                    ).unwrap();
+                },
+                ServerAction::Reply(message) => {
+                    dispatch.tx.send(
+                        Envelope {
+                            from: server.get_identity(),
+                            to: Addressee::SingleServer(received.unwrap().from.clone()),
+                            message: message,
+                        }
+                    ).unwrap();
+                },
+                ServerAction::Stop => {
+                    return;
+                },
+                ServerAction::Continue => {},
+            }
         }
     }
-
-    // fn handle_event(server: &RaftServer, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
-    //     match server.current_role() {
-    //         Role::Follower => Raft::handle_event_as_follower(server, dispatch, election_timeout),
-    //         Role::Candidate => Raft::handle_event_as_candidate(server, dispatch, election_timeout),
-    //         Role::Leader => ServerAction::Continue,
-    //     }
-    // }
-    //
-    // fn handle_event_as_follower(server: &RaftServer, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
-    //     match rx.recv_timeout(election_timeout) {
-    //         Ok(msg) => {
-    //             match server.consider_other_servers_term() {
-    //                 ServerAction::NewRole(role) =>
-    //             }
-    //         }
-    //
-    //
-    //         Ok(InwardMessage::AppendEntries(ref ae)) => server.append_entries(ae),
-    //         Ok(InwardMessage::RequestVote(ref rv)) => server.consider_vote(rv),
-    //         Ok(InwardMessage::Stop) => ServerAction::Stop,
-    //         Err(RecvTimeoutError::Timeout) => server.become_candidate_leader(dispatch),
-    //         Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
-    //         // Ignore events that have no meaning for this role.
-    //         _ => ServerAction::Continue
-    //     }
-    // }
-    //
-    // fn handle_event_as_candidate(server: &RaftServer, dispatch: &Dispatch, election_timeout: Duration) -> ServerAction {
-    //     //TODO: The timeout for a candidate is more complex; it may receive results for requested votes. These should not reset the election timeout.
-    //     //TODO: We need a separate thread to timeout the election.
-    //     return match rx.recv_timeout(election_timeout) {
-    //         Ok(InwardMessage::AppendEntries(ref ae)) => server.consider_conceding(ae),
-    //         Ok(InwardMessage::RequestVote(ref rv)) => server.consider_vote(rv),
-    //         Ok(InwardMessage::RequestVoteResult(ref rvr)) => server.collect_vote(rvr),
-    //         Ok(InwardMessage::Stop) => ServerAction::Stop,
-    //         Err(RecvTimeoutError::Timeout) => server.start_new_election(dispatch),
-    //         Err(RecvTimeoutError::Disconnected) => ServerAction::Stop,
-    //         _ => ServerAction::Continue
-    //     }
-    // }
-
-    // fn report_status(server: &Server, dispatch: &Dispatch) {
-    //     dispatch.status.send(server.report_status());
-    // }
-
 }
 
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-    use std::sync::mpsc::channel;
-    use election_timeout::*;
-    use super::*;
-
-    #[test]
-    fn new_election_timeout_is_between_150_and_300ms_for_lan_config() {
-        election_timeout_sample(&ElectionTimeoutRange::lan());
-    }
-
-    #[test]
-    fn new_election_timeout_is_between_250_and_500ms_for_close_wan_config() {
-        election_timeout_sample(&ElectionTimeoutRange::close_wan());
-    }
-
-    #[test]
-    fn new_election_timeout_is_between_500_and_2500ms_for_global_wan_config() {
-        election_timeout_sample(&ElectionTimeoutRange::global_wan());
-    }
-
-    fn election_timeout_sample(election_timeout_range: &ElectionTimeoutRange) {
-        let mut hit_lower = false;
-        let mut hit_upper = false;
-
-        for tries in 1..10000000 {
-            let timeout = Raft::new_election_timeout(election_timeout_range);
-            assert!(timeout >= Duration::from_millis(election_timeout_range.minimum_milliseconds));
-            assert!(timeout <= Duration::from_millis(election_timeout_range.maximum_milliseconds));
-
-            if timeout == Duration::from_millis(election_timeout_range.minimum_milliseconds) { hit_lower = true; }
-            if timeout == Duration::from_millis(election_timeout_range.maximum_milliseconds) { hit_upper = true; }
-            if tries > 10000 && hit_upper && hit_lower { break; }
-        }
-
-        assert!(hit_lower);
-        assert!(hit_upper);
-    }
-
-    #[test]
-    fn thread_returns_when_stopped() {
-        let (endpoint, dispatch) = Raft::get_channels();
-        let this_server_id = ServerIdentity::new();
-        let server = Server::new(this_server_id.clone(), Vec::new());
-        endpoint.tx.send(Envelope {
-            from: this_server_id.clone(),
-            to: Addressee::SingleServer(this_server_id.clone()),
-            message: Message::Stop
-        });
-
-        Raft::run(&server, &dispatch, ElectionTimeoutRange::testing());
-    }
-
-    #[test]
-    fn candidate_will_start_a_new_term_if_the_election_fails() {
-        let (endpoint, dispatch) = Raft::get_channels();
-        let this_server_id = ServerIdentity::new();
-        let server = Server::new(this_server_id.clone(), Vec::new());
-
-        server.start_new_election();
-
-        panic!();
-        // match loopback.recv().unwrap() {
-        //     InwardMessage::RequestVote(rv) => assert_eq!(this_server_id, rv.candidate_id),
-        //     _ => panic!()
-        // };
-    }
-}
+#[path = "./raft_tests.rs"]
+mod tests;
