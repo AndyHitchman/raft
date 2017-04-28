@@ -3,11 +3,11 @@ use std::time::Duration;
 use rand;
 use rand::Rng;
 
-
+#[derive(Copy, Clone)]
 pub struct ElectionTimeoutRange {
-    minimum_milliseconds: u64,
-    maximum_milliseconds: u64,
-    heartbeat_interval_milliseconds: u64,
+    pub minimum_milliseconds: u32,
+    pub maximum_milliseconds: u32,
+    pub heartbeat_interval_milliseconds: u32,
 }
 
 
@@ -23,7 +23,7 @@ impl ElectionTimeoutRange {
     }
 
     pub fn leader_heartbeat(&self) -> Duration {
-        Duration::from_millis(self.heartbeat_interval_milliseconds)
+        Duration::from_millis(self.heartbeat_interval_milliseconds as u64)
     }
 
     /// Used in unit testing
@@ -89,11 +89,11 @@ mod tests {
 
         for tries in 1..10000000 {
             let timeout = election_timeout_range.new_timeout();
-            assert!(timeout >= Duration::from_millis(election_timeout_range.minimum_milliseconds));
-            assert!(timeout <= Duration::from_millis(election_timeout_range.maximum_milliseconds));
+            assert!(timeout >= Duration::from_millis(election_timeout_range.minimum_milliseconds as u64));
+            assert!(timeout <= Duration::from_millis(election_timeout_range.maximum_milliseconds as u64));
 
-            if timeout == Duration::from_millis(election_timeout_range.minimum_milliseconds) { hit_lower = true; }
-            if timeout == Duration::from_millis(election_timeout_range.maximum_milliseconds) { hit_upper = true; }
+            if timeout == Duration::from_millis(election_timeout_range.minimum_milliseconds as u64) { hit_lower = true; }
+            if timeout == Duration::from_millis(election_timeout_range.maximum_milliseconds as u64) { hit_upper = true; }
             if tries > 10000 && hit_upper && hit_lower { break; }
         }
 
